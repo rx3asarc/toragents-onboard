@@ -9,6 +9,8 @@
 #
 # Test without side effects:
 #   TORAGENTS_FORCE_OS=mac bash setup.sh --dry-run --peer-onion x.onion --peer-fp 0123...
+# Write the config but do not install/start the supervisors (containers, tests):
+#   bash setup.sh --no-service --peer-onion x.onion --peer-fp 0123...
 set -euo pipefail
 
 # The daemon sources are embedded here as base64 by tools/embed.py. Fetching
@@ -21,6 +23,7 @@ HOME_DIR="${TORAGENTS_HOME:-$HOME/.toragents}"
 PORT="${TORAGENTS_PORT:-8799}"
 SOCKS="${TORAGENTS_SOCKS:-9061}"     # NOT 9050: that is a homebrew tor's default
 PEER_ONION=""; PEER_FP=""; PEER_LABEL="peer"; DRY=0
+NOSVC="${NOSVC:-0}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -28,6 +31,7 @@ while [ $# -gt 0 ]; do
     --peer-fp)    PEER_FP="$2"; shift 2 ;;
     --peer-label) PEER_LABEL="$2"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
+    --no-service) NOSVC=1; shift ;;  # write units but never install/start them
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -277,7 +281,7 @@ if [ "$OS" = mac ]; then
   write_plist com.toragents.inbox "$LA/com.toragents.inbox.plist" "$VPY" "$HOME_DIR/inbox_agent.py" serve
   ok "plists written to $LA"
 
-  if [ "$DRY" = 0 ]; then
+  if [ "$DRY" = 0 ] && [ "$NOSVC" = 0 ]; then
     REAL_LA="$HOME/Library/LaunchAgents"; mkdir -p "$REAL_LA"
     cp "$LA"/*.plist "$REAL_LA"/
     for p in "$REAL_LA"/com.toragents.*.plist; do
@@ -317,7 +321,7 @@ RestartSec=5
 WantedBy=default.target
 UNIT
   ok "units written to $UD"
-  if [ "$DRY" = 0 ]; then
+  if [ "$DRY" = 0 ] && [ "$NOSVC" = 0 ]; then
     RD="$HOME/.config/systemd/user"; mkdir -p "$RD"; cp "$UD"/*.service "$RD"/
     systemctl --user daemon-reload
     systemctl --user enable --now toragents-tor.service toragents-inbox.service
