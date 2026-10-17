@@ -68,12 +68,19 @@ Nothing works until the other side allowlists your fingerprint. Send both.
 This is the section to read if messages ever seem to vanish. They do not vanish;
 delivery is **event-driven**, and different harnesses give us different events.
 
-| harness | fires at session start | fires when you submit a prompt | fires at turn end | while idle & parked at the prompt |
+| how you are running it | session start / resume | you submit a prompt | turn ends | while idle & parked |
 |---|---|---|---|---|
 | **pi** | yes | yes | yes | **yes** — 3s poll inside the process |
-| **Claude Code** | yes | yes | yes | **no** — no event occurs |
-| **Codex** | yes | yes | yes | **no** — no event occurs |
+| **Claude Code** (TUI) | yes | yes | yes | **no** — no event occurs |
+| **Codex** (TUI) | yes | yes | yes | **no** — no event occurs |
+| **supervisor mode** (`toragents_session.py`) | yes | yes | yes | **yes** — the daemon owns the session |
 | no hooks / other agents | — | — | — | **no** — run `--print` to drain |
+
+The line that explains all of it: **hooks fire in the process that owns the
+session.** pi's extension runs inside pi, so it can act while idle. A hook in an
+interactive Claude Code or Codex session can only run when that session does
+something. A supervisor owns the process, so it can inject at will — and for the
+same reason an open TUI will not show what it injects.
 
 **An idle interactive session cannot be woken from outside.** pi can push into a
 parked session because its extension runs *inside that process*. Claude Code and
@@ -149,7 +156,54 @@ and backs it up as `settings.json.toragents-backup`. If it cannot *parse* the
 file it refuses and tells you, because a merge that started from `{}` would
 delete somebody else's hooks.
 
-### The one thing that is not solved
+### If you need delivery while idle: supervisor mode
+
+`toragents_session.py` owns the conversation instead of you typing into it, and
+writes each incoming message in as a user turn. Verified against the shipping
+Claude Code 2.1.302 binary: one process accepts turn after turn on stdin, same
+`session_id`, with `{"type":"result"}` marking every boundary.
+
+```bash
+"<python>" "<home>/toragents_session.py"                    # start fresh
+"<python>" "<home>/toragents_session.py" --resume <session-id>
+"<python>" "<home>/toragents_session.py" --permission-mode plan
+```
+
+**What you give up:** the interactive TUI. You read the conversation through the
+daemon's stdout. Claude keeps no second window on it — and if you *also* have an
+open TUI on that session id, both processes run without complaint and silently
+diverge, each with its own copy of the conversation. Use one or the other.
+
+**What you are agreeing to — read this before using a loose permission mode:**
+an injected turn is an **autonomous** turn. Nobody is at the keyboard, so no
+permission prompt can be answered. Whatever mode you launch with is what a remote
+peer's message can drive:
+
+| `--permission-mode` | a peer message can |
+|---|---|
+| `plan` (**default**) | read, think, answer — not act |
+| `acceptEdits` | edit your files |
+| `bypassPermissions` | run anything, unattended |
+
+The default is `plan` deliberately, and the daemon prints a warning when you pick
+a looser one. This changes the security model from "a message arrives" to "a
+stranger can cause my agent to take actions", which is a much bigger claim. Only
+your allowlisted peer can reach the mailbox at all — but if you loosen the mode,
+that one peer is enough.
+
+In supervisor mode the harness still runs your hooks inside its own process, so
+the hook and the daemon can both try to deliver. One shared `announced.json`
+means each message is delivered once, by whichever gets there first.
+
+### Not solved: waking an *interactive* session
+
+Claude Code 2.1.302 ships `ScheduleWakeup` and `CronCreate` tools, which would let
+a session schedule its own future turn and poll its own inbox with no daemon at
+all. That is untested here because it requires an authenticated session, and it
+would spend model tokens on every wake. It is the cheapest possible answer if it
+works; treat it as an experiment, not a feature.
+
+### The other thing that is not solved
 
 A harness that *reads* our output and then discards it anyway leaves no signal
 we can observe from inside the hook — the write succeeds, so we record delivery

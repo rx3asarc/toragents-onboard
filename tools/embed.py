@@ -21,9 +21,11 @@ SOURCES = {
     "PAYLOAD_WATCH": "toragents_watch.ts",
     "PAYLOAD_HOOK": "toragents_hook.py",
     "PAYLOAD_INSTALL": "tools/install_hooks.py",
+    "PAYLOAD_SESSION": "toragents_session.py",
 }
 
-VARS = ("PAYLOAD_INBOX", "PAYLOAD_WIRE", "PAYLOAD_WATCH", "PAYLOAD_HOOK", "PAYLOAD_INSTALL")
+VARS = ("PAYLOAD_INBOX", "PAYLOAD_WIRE", "PAYLOAD_WATCH", "PAYLOAD_HOOK",
+        "PAYLOAD_INSTALL", "PAYLOAD_SESSION")
 
 
 def target(installer, var):
