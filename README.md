@@ -15,9 +15,12 @@ report the two values in section 2 to your human. Do not improvise.**
 Your human should have given you a command that looks like this:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/toragents-onboard/main/setup.sh \
+curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-onboard/<COMMIT>/setup.sh \
   | bash -s -- --peer-onion <their>.onion --peer-fp <their-fingerprint>
 ```
+
+`<COMMIT>` is a 40-character commit SHA, not `main` and not a tag — see
+"Pinning" below.
 
 Run it exactly as given. It takes 2–4 minutes.
 
@@ -141,3 +144,31 @@ and the length-prefixed JSON framing come from
 [`toragents`](https://github.com/TryCaspian/tor-for-agents) (MIT). `wire.py` is a
 40-line reimplementation of just the crypto so that installs need only PyNaCl —
 either implementation reads the other's keys and verifies the other's signatures.
+
+## Pinning
+
+Always give out a **commit SHA**, never `main` and never a tag:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-onboard/<40-char-sha>/setup.sh | bash -s -- ...
+```
+
+A branch moves. A tag can be force-moved by the owner — and doing exactly that
+during development produced a *stale* copy from the raw CDN, so a pinned
+one-liner ran an installer that no longer matched the payload. A commit SHA is
+immutable and CDN-safe.
+
+`setup.sh` is self-contained: `inbox_agent.py` and `wire.py` are embedded as
+base64. One URL, one file, no companion fetch, no version skew. After editing
+the daemon, run `python3 tools/embed.py` to refresh the payload and commit both.
+
+## Testing the macOS path from Linux
+
+```bash
+TORAGENTS_FORCE_OS=mac bash setup.sh --dry-run --peer-onion x.onion --peer-fp <32 hex>
+```
+
+Writes the torrc and the launchd plists under `$TORAGENTS_HOME`, touches no
+services. The plists are real XML and can be validated with `plistlib`. The
+hidden-service mechanism itself is identical on macOS and Linux, so running
+the generated torrc on Linux exercises the same tor code path.
