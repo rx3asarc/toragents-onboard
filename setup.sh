@@ -186,7 +186,12 @@ ok "venv: $VPY"
 # The one-liner is `curl | bash`, so there is no script directory to copy
 # from: BASH_SOURCE is "bash" and dirname is ".". Fetch the companion files
 # from the pinned ref instead, and fall back to local copies for a git clone.
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+# BASH_SOURCE is unbound under `set -u` when the script arrives on stdin, so
+# test it explicitly rather than letting dirname("") resolve to the cwd.
+SRC_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 for f in inbox_agent.py wire.py; do
   if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/$f" ]; then
     cp "$SRC_DIR/$f" "$HOME_DIR/$f"
