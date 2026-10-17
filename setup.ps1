@@ -42,9 +42,20 @@ function Die  ($m) { Write-Host ""; Write-Host "STOP: $m" -ForegroundColor Red; 
 Write-Host ""
 Ok ("platform: Windows " + [Environment]::OSVersion.Version.ToString() + " / " + $env:PROCESSOR_ARCHITECTURE)
 
-# tar.exe ships with Windows 10 1803+; every extraction below needs it.
-if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
-  Die "tar.exe not found. It ships with Windows 10 1803 and later. Update Windows, or extract manually."
+# tar.exe ships with Windows 10 1803+. Resolve it to the REAL Windows binary
+# rather than trusting PATH: with Git Bash (MSYS2) installed, bare `tar` resolves
+# to GNU tar, which cannot parse a Windows path like C:\Users\... and dies with
+# "tar (child): Cannot connect to C: resolve failed" (tries C: as a hostname).
+$SysRoot = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
+$Tar = "$SysRoot\System32\tar.exe"
+if (-not (Test-Path $Tar)) {
+  $cmd = Get-Command tar -ErrorAction SilentlyContinue
+  if ($cmd) { $Tar = $cmd.Source } else {
+    Die "tar.exe not found. It ships with Windows 10 1803 and later. Update Windows, or extract manually."
+  }
+}
+if ($Tar -notmatch '\\System32\\tar\.exe$') {
+  Warn "using $Tar (not the Windows built-in); if extraction fails, install a newer Windows"
 }
 
 $IsArm = $env:PROCESSOR_ARCHITECTURE -match "ARM64"
@@ -64,7 +75,7 @@ function Install-PortablePython {
   Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
   $dest = Join-Path $HomeDir "python"
   New-Item -ItemType Directory -Force -Path $dest | Out-Null
-  tar -xzf $tmp -C $dest --strip-components=1
+  & $Tar -xzf $tmp -C $dest --strip-components=1
   Remove-Item $tmp -Force -ErrorAction SilentlyContinue
   $py = Join-Path $dest "python.exe"
   if (-not (Test-Path $py)) { return $null }
@@ -99,7 +110,7 @@ if (-not (Test-Path $TorBin)) {
     $tmp  = Join-Path $env:TEMP $name
     Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
     New-Item -ItemType Directory -Force -Path (Join-Path $HomeDir "tor-bin") | Out-Null
-    tar -xzf $tmp -C (Join-Path $HomeDir "tor-bin")
+    & $Tar -xzf $tmp -C (Join-Path $HomeDir "tor-bin")
     Remove-Item $tmp -Force -ErrorAction SilentlyContinue
     if (-not (Test-Path $TorBin)) { Die "tor.exe not found after extraction. Check the bundle URL for $TOR_BUNDLE." }
   }

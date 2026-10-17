@@ -110,6 +110,7 @@ this is the honest limitation, see README.md in toragents for why.
 | `Address already in use` | port 8799 taken | re-run with `TORAGENTS_PORT=8811` |
 | `SOCKS` connection refused | tor not running | mac: `launchctl list \| grep toragents` / linux: `systemctl --user status toragents-tor` |
 | send says `not on allowlist` | peer has not added you | send them your fingerprint |
+| `tar (child): Cannot connect to C: resolve failed` (Windows) | Git Bash's GNU tar shadowed Windows' `tar.exe` in PATH | fixed in setup.ps1 — it now uses `%SystemRoot%\System32\tar.exe` explicitly. If you hit it on an old copy, replace bare `tar` with `& "$env:SystemRoot\System32\tar.exe"` |
 
 ## Windows notes
 
@@ -123,7 +124,12 @@ Supported, via `setup.ps1` (see Install above). What it does differently:
 - **Paths** live in `%USERPROFILE%\.toragents`. Set `TORAGENTS_HOME` in your
   shell to make the CLI find them.
 - **No WSL required.** You do not need it as before.
-- `tar.exe` (ships with Windows 10 1803+) is used to unpack python and tor.
+- `tar.exe` (ships with Windows 10 1803+) unpacks python and tor. The script
+  calls it by full path (`%SystemRoot%\System32\tar.exe`) on purpose: on a
+  machine with **Git Bash** installed, bare `tar` resolves to MSYS2's GNU tar,
+  which cannot parse `C:\Users\...` and fails with
+  `tar (child): Cannot connect to C: resolve failed`. This was found on a real
+  Windows 11 machine — do not "simplify" it back to bare `tar`.
 - tor publishes a windows-x86_64 bundle only; on ARM64 Windows it runs under
   emulation, which is fine but slightly slower to bootstrap.
 
