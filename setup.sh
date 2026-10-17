@@ -352,6 +352,19 @@ if [ "$DRY" = 1 ]; then
   exit 0
 fi
 
+# With --no-service tor is never started, so the hostname file never appears.
+# Waiting here was a hang: the install finished and then blocked forever.
+if [ "$NOSVC" = 1 ]; then
+  say "Supervisors skipped (--no-service)"
+  printf '  Start tor, then your onion appears in %s/hs/hostname\n\n' "$HOME_DIR"
+  printf '    %s -f %s/torrc &\n' "$TORBIN" "$HOME_DIR"
+  printf '    TORAGENTS_HOME=%s %s %s/inbox_agent.py serve &\n\n' "$HOME_DIR" "$VPY" "$HOME_DIR"
+  printf '  Your fingerprint:\n'
+  printf '    TORAGENTS_HOME=%s %s %s/inbox_agent.py whoami\n\n' "$HOME_DIR" "$VPY" "$HOME_DIR"
+  printf '  Re-running this installer later is safe; it never rotates the identity.\n'
+  exit 0
+fi
+
 say "Waiting for tor to publish the hidden service"
 printf '  (first run bootstraps the tor network -- up to 3 minutes, be patient)\n'
 i=0
