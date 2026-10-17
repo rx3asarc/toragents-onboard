@@ -130,11 +130,28 @@ def save_peers(p):
 
 
 def onion():
-    try:
-        with open(HOSTNAME_FILE) as f:
-            return f.read().strip()
-    except Exception:
-        return None
+    """Resolve our onion address without ever talking to tor.
+
+    Two layouts exist:
+      - static HiddenServiceDir (every install this script makes): tor writes
+        $HOME/hs/hostname, which wins.
+      - ADD_ONION (a daemon that registers through the control port): tor keeps
+        no hostname file, so that daemon records the address it got in
+        $STATE/onion.txt.
+
+    This must stay read-only and work with tor stopped: during a cutover this
+    is the evidence an operator reads, and "onion (not configured)" on a
+    healthy migration would invite a false rollback.
+    """
+    for path in (HOSTNAME_FILE, os.path.join(STATE, "onion.txt")):
+        try:
+            with open(path) as f:
+                val = f.read().strip()
+            if val:
+                return val
+        except OSError:
+            continue
+    return None
 
 
 # --------------------------------------------------------------- framing --
