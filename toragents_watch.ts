@@ -39,8 +39,62 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-const HOME = process.env.TORAGENTS_HOME || join(homedir(), ".toragents");
-const STATE = process.env.TORAGENTS_STATE || join(HOME, "state");
+/**
+ * Which directory is the daemon actually writing to?
+ *
+ * Two layouts exist and guessing wrong means the watcher silently watches an
+ * empty directory forever: an install keeps <home>/state/inbox, while a daemon
+ * driven from the control port (TORAGENTS_STATE) keeps identity.json, peers.json
+ * and inbox/ flat in one directory. So probe for a real inbox instead of
+ * assuming, and report which one was chosen.
+ */
+function resolveState(): { dir: string; why: string } {
+	const home = process.env.TORAGENTS_HOME || join(homedir(), ".toragents");
+	// Explicit configuration always wins outright. Only the DEFAULTS get scored,
+	// because an explicit path outranking nothing is the whole point of setting
+	// it -- scoring an explicit TORAGENTS_HOME against /var/lib would silently
+	// watch the wrong directory on a machine that has both.
+	if (process.env.TORAGENTS_STATE) {
+		return { dir: process.env.TORAGENTS_STATE, why: "TORAGENTS_STATE (explicit)" };
+	}
+	if (process.env.TORAGENTS_HOME) {
+		return { dir: join(home, "state"), why: "TORAGENTS_HOME/state (explicit)" };
+	}
+	// No explicit config: score the defaults. A stray empty <home>/state/inbox
+	// (left by a previous run of this very extension) must not outrank the
+	// directory that actually holds the daemon's identity and messages.
+	const candidates: [string, string][] = [];
+	for (const [dir, why] of [
+		[join(home, "state"), "~/.toragents/state"],
+		["/var/lib/toragents-inbox", "flat state dir"],
+	] as [string, string][]) {
+		if (!candidates.some(([d]) => d === dir)) candidates.push([dir, why]);
+	}
+	const score = (dir: string): number => {
+		let n = 0;
+		try {
+			if (existsSync(join(dir, "identity.json"))) n += 2;
+			if (existsSync(join(dir, "inbox"))) n += 1;
+			if (readdirSync(join(dir, "inbox")).some((f) => f.endsWith(".json"))) n += 1;
+		} catch {
+			return 0;
+		}
+		return n;
+	};
+	let best = { dir: candidates[0][0], why: "default, created on first run" };
+	let bestScore = 0;
+	for (const [dir, why] of candidates) {
+		const sc = score(dir);
+		if (sc > bestScore) {
+			bestScore = sc;
+			best = { dir, why: `${why} (score ${sc})` };
+		}
+	}
+	return best;;
+}
+
+const RESOLVED = resolveState();
+const STATE = RESOLVED.dir;
 const INBOX = join(STATE, "inbox");
 const ANNOUNCED = join(STATE, "announced.json");
 const POLL_MS = Number(process.env.TORAGENTS_POLL_MS || 3000);
@@ -195,11 +249,16 @@ export default function (pi: ExtensionAPI) {
 			const { ids } = scanInbox();
 			announced = new Set(ids);
 			writeAnnounced(announced);
-			if (ids.length > 0) seedNotice = `${ids.length} existing message(s) marked as already seen`;
+			if (ids.length > 0) {
+				seedNotice = `${ids.length} existing message(s) marked as already seen`;
+			}
 		}
 		if (seedNotice) {
 			try {
-				ctx.ui.notify(`toragents: watching for new messages (${seedNotice})`, "info");
+				ctx.ui.notify(
+					`toragents: watching ${INBOX} (via ${RESOLVED.why}); ${seedNotice}`,
+					"info",
+				);
 			} catch {
 				/* notify is best-effort */
 			}
@@ -238,6 +297,7 @@ export default function (pi: ExtensionAPI) {
 			const lines = [
 				`watching    ${timer ? "yes" : "no"} every ${POLL_MS}ms`,
 				`inbox       ${INBOX}`,
+				`resolved by ${RESOLVED.why}`,
 				`on disk     ${messages.length}`,
 				`undelivered ${unread}`,
 				`state       ${existsSync(ANNOUNCED) ? "memo present" : "memo missing (will seed)"}`,
