@@ -447,6 +447,54 @@ def dial(target_onion, timeout=None):
         f"  Check the peer is running and tor is up on 127.0.0.1:{SOCKS_PORT}.")
 
 
+def cmd_reach(a):
+    """Is the peer actually reachable, right now, through OUR tor?
+
+    This exists because two separate mistakes produced a false "the peer is
+    down" in one session:
+
+      1. dialling the peer's LOCAL port. The onion exposes ONE virtual port (80)
+         which their tor forwards to their listener; their local port number is
+         invisible from here and dialling it is refused.
+      2. dialling through the wrong tor. If the state config has no socks_port
+         the CLI falls back to 9050 -- the machine's default tor, which may not
+         be the instance that carries these circuits -- and descriptor fetches
+         stall there while the dedicated instance answers in seconds.
+
+    So: dial port 80, report WHICH socks port did it, and time it.
+    """
+    import time
+    p = peers()
+    target = None
+    for fp, v in p.items():
+        if not a.to or a.to in (fp, v.get("label"), fp[:12]):
+            target = v
+            break
+    if target is None:
+        sys.exit(f"unknown peer {a.to!r}; try: inbox_agent.py peers")
+    label = target.get("label") or target["onion"][:16]
+    print(f"peer      {label}")
+    print(f"onion     {target['onion']}")
+    print(f"dialling  {target['onion'][:16]}...:80   via socks 127.0.0.1:{SOCKS_PORT}")
+    t0 = time.time()
+    try:
+        s = dial(target["onion"], )
+    except ConnectionError as exc:
+        print(f"\n  UNREACHABLE after {time.time() - t0:.1f}s")
+        print(f"  {exc}")
+        if SOCKS_PORT == 9050:
+            print("  note: this used tor's default SOCKS port. If this machine runs a")
+            print("        dedicated tor for toragents, set socks_port in")
+            print("        <state>/config.json or TORAGENTS_SOCKS, and retry.")
+        sys.exit(2)
+    dt = time.time() - t0
+    try:
+        s.close()
+    except Exception:
+        pass
+    print(f"\n  REACHABLE in {dt:.1f}s -- their tor published, their listener accepted")
+
+
 def auto_session() -> str:
     """Who is speaking, without asking anyone to configure anything.
 
@@ -695,6 +743,9 @@ def main():
     p = s.add_parser("ack")
     p.add_argument("id")
     p.set_defaults(fn=cmd_ack)
+    p = s.add_parser("reach")
+    p.add_argument("--to", default="")
+    p.set_defaults(fn=cmd_reach)
     p = s.add_parser("send")
     p.add_argument("--to", required=True)
     p.add_argument("--body", default=None,

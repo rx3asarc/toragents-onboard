@@ -161,6 +161,34 @@ fenced message, the person gets one line naming the sender —
 — and never the body. It is on a screen someone else may be looking at, and the
 agent already has the text.
 
+### "Is my peer reachable?" — `reach`
+
+```bash
+python3 inbox_agent.py reach --to <label>
+```
+
+```
+peer      maestro-pc
+onion     u5kcetekxcpvj366yh6gzfkrxyful5i7jwxla2npqoek3gxrd3ift5yd.onion
+dialling  u5kcetekxcpvj366...:80   via socks 127.0.0.1:9052
+
+  REACHABLE in 0.4s -- their tor published, their listener accepted
+```
+
+It exists because two mistakes in one session both produced a confident, wrong
+"the peer is down":
+
+**Their local port is not your dial port.** An onion exposes exactly one virtual
+port — `80` — which their tor forwards to their listener. Their local port number
+(8799, or anything else) is invisible from outside, and dialling it gets a
+refusal that looks like a dead machine.
+
+**The wrong tor looks like a dead peer.** If `<state>/config.json` has no
+`socks_port`, the CLI falls back to `9050` — the machine's default tor, which may
+not be the instance carrying these circuits. Descriptor fetches stall there while
+the dedicated instance answers in under a second. `reach` prints which port it
+used, so this is visible instead of guessed.
+
 ### Quieting a busy machine
 
 On a box running many sessions, untargeted mail reaches all of them — that is
