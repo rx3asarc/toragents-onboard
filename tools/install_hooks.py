@@ -161,8 +161,14 @@ def main() -> int:
         return 1
     # Quoted so a python path with spaces (Windows "Program Files", mac user
     # names with spaces) survives being handed to a shell.
-    command = f'"{os.path.abspath(a.python)}" "{script}"'
-    windows_command = f'"{os.path.abspath(a.python)}" "{script}"'
+    def win_ok(path: str) -> str:
+        """Forward slashes: Windows accepts them everywhere, and a backslash
+        inside double quotes is an escape in some shells. C:/Users/Hp/... is
+        unambiguous in Git Bash, PowerShell, cmd and Python alike."""
+        return os.path.abspath(path).replace("\\", "/")
+
+    command = f'"{win_ok(a.python)}" "{win_ok(script)}"'
+    windows_command = command
 
     claude = os.path.join(a.home, ".claude")
     codex = os.path.join(a.home, ".codex")
