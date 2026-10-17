@@ -6,7 +6,8 @@ companions from a ref was fragile (a force-moved tag served stale bytes from the
 CDN, so a pinned one-liner ran a mismatched installer). Embedding makes each
 installer self-contained: one URL, one file, no version skew.
 
-Run after editing inbox_agent.py, wire.py or toragents_watch.ts:
+Run after editing inbox_agent.py, wire.py, toragents_watch.ts,
+            toragents_hook.py or tools/install_hooks.py:
     python3 tools/embed.py
 """
 import base64
@@ -18,9 +19,11 @@ SOURCES = {
     "PAYLOAD_INBOX": "inbox_agent.py",
     "PAYLOAD_WIRE": "wire.py",
     "PAYLOAD_WATCH": "toragents_watch.ts",
+    "PAYLOAD_HOOK": "toragents_hook.py",
+    "PAYLOAD_INSTALL": "tools/install_hooks.py",
 }
 
-VARS = ("PAYLOAD_INBOX", "PAYLOAD_WIRE", "PAYLOAD_WATCH")
+VARS = ("PAYLOAD_INBOX", "PAYLOAD_WIRE", "PAYLOAD_WATCH", "PAYLOAD_HOOK", "PAYLOAD_INSTALL")
 
 
 def target(installer, var):

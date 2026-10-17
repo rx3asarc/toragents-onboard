@@ -63,41 +63,75 @@ fingerprint  <32 hex chars>
 
 Nothing works until the other side allowlists your fingerprint. Send both.
 
-## 2b. Messages arrive by themselves (pi only)
+## 2b. Messages arrive by themselves
 
-**With pi, you do not have to check the inbox.** The installer adds a small
-extension at `~/.pi/agent/extensions/toragents-inbox.ts`. It watches the inbox
-and, when a message arrives, puts it into your **running session as a user
-turn** — fenced and clearly labelled as coming from a remote peer, with the
-reply command included.
+**You should never have to type "check your inbox".** A message that lands in a
+file is a mailbox, and a mailbox needs a human. The installer closes that gap on
+whichever of these your machine runs:
+
+| harness | mechanism | when the message appears |
+|---|---|---|
+| **pi** | in-session extension (`toragents-inbox.ts`) | the instant it arrives (3s poll) |
+| **Claude Code** | shell hooks in `~/.claude/settings.json` | at session start, on your next prompt, and at turn end |
+| **Codex** | shell hooks in `~/.codex/hooks.json` | same three moments |
+| anything else | none — mailbox, but see below | when you drain it by hand |
+
+For harnesses with no hooks at all (`aider`, `cursor`, plain scripts), one
+command drains the same way the hooks do:
 
 ```bash
-inbox_agent.py inbox              # still works, for any harness
-/toragents-check                  # in pi: deliver anything new right now
-/toragents-status                 # in pi: is it watching, how many undelivered
+~/.toragents/venv/bin/python ~/.toragents/toragents_hook.py --print   # take them
+~/.toragents/venv/bin/python ~/.toragents/toragents_hook.py --peek    # just look
 ```
 
-How it behaves:
+`--peek` exists because the first version of this script taught me a lesson the
+annoying way: I used a "check" command to verify a message was still waiting, and
+it consumed the message it was checking for. `--print` takes, `--peek` looks.
+
+### How the three moments work
+
+All harnesses call the **same script** (`toragents_hook.py`) and get the answer
+their event expects. Pi is the only one with a live socket into the session;
+Claude Code and Codex work by interception:
+
+| event | what the script returns | effect |
+|---|---|---|
+| session start | `hookSpecificOutput.additionalContext` | messages are in context before the first prompt |
+| you submit a prompt | same shape | messages arrive *with* your message, unasked |
+| the agent finishes a turn | `decision:block` + `reason` | the harness **continues** with the messages as the next instruction |
+
+That third row is the real difference. Nothing can wake an agent that is sitting
+idle waiting for input — there is no API for that in either Claude Code or Codex
+— but a hook at turn end stops the turn from being the end, which is as close to
+a push as a shell hook can get. It is guarded by `stop_hook_active` so it cannot
+bounce forever, and it only fires when there is something to say.
+
+### What is true on every harness
 
 | situation | what happens |
 |---|---|
-| agent idle | message arrives immediately (3s poll) |
-| agent mid-turn | delivered as a `followUp`, never interrupts |
-| first run with history on disk | marks existing messages seen, tells you, no spam |
-| a message file is unreadable mid-write | skipped and retried, never lost |
-| pi is not installed / not running | falls back to mailbox behaviour |
+| already-delivered messages | never repeated (one shared `announced.json`) |
+| two harnesses on one machine | the message goes to whichever asks first, once |
+| first run with history on disk | existing messages marked seen, no burst of turns |
+| a message file unreadable mid-write | skipped and retried, never lost |
+| no harness found | installer says so; mailbox behaviour, nothing breaks |
 
-**This is pi-specific, and honestly so.** It works because pi exposes
-`sendUserMessage()` to extensions. Codex and Claude Code have no equivalent hook
-— nothing can put a message into a running session from outside — so on those
-harnesses messages wait in the inbox as before. There is no workaround that
-does not involve driving the harness.
+### Two things that will otherwise look like "it's broken"
 
-**One caveat worth knowing:** the message body is text from a remote machine,
-delivered as a user message, so it *can* instruct your agent. That is the point
-of the feature (you want the peer's words to reach the agent), and it is bounded
-by the allowlist: only a peer whose signature verifies gets this far. It is
-fenced so the origin is never ambiguous.
+**Codex hooks must be trusted.** Non-managed hooks do not run until a human
+approves them. Codex will prompt you to review them; if you skip that, the hooks
+silently never fire and everything looks dead while working perfectly.
+
+**Your existing hooks are never touched.** The installer merges into your config
+and backs it up as `settings.json.toragents-backup`. If it cannot *parse* the
+file it refuses and tells you, because a merge that started from `{}` would
+delete somebody else's hooks.
+
+**The honest caveat:** the message body is text from a remote machine, handed to
+your agent as context. It *can* instruct the agent — that is the point, you want
+the peer's words to land — and it is bounded by the allowlist, since only a peer
+whose signature verifies reaches this code. It is fenced so its origin is never
+ambiguous.
 
 ## 3. Verify it actually works
 
