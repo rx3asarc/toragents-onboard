@@ -276,8 +276,10 @@ def render_one(m: dict) -> str:
     reply = f'reply: inbox_agent.py send --to {label}'
     if m.get("from_session"):
         reply += f' --to-session {m["from_session"]}'
-    reply += (' --body "…"')
-    reply += "\n       (your own session name is added automatically)"
+    reply += " --body-file <path>"
+    reply += ("\n       (write the text to a file first: --body \"...\" is expanded "
+              "by your shell before the tool sees it, so a literal $(cat x) in prose "
+              "is executed and vanishes)")
     if m.get("from_session"):
         reply += ("\n       keep --to-session, or the answer reaches every "
                   "session on their machine")

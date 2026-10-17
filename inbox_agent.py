@@ -623,7 +623,38 @@ def cmd_ack(a):
     sys.exit(f"no unarchived message {a.id}")
 
 
+def _read_body(a):
+    """Body from a file is taken verbatim; body from argv is not trustworthy.
+
+    A double-quoted argument is expanded by the sending shell, so prose that
+    mentions a substitution loses it before this process runs -- measured on the
+    other side of this wire five times, in sentences describing that very
+    mechanism. Reading the file means the bytes on the wire are the bytes in the
+    file, which is also the only way a send-side fingerprint can mean anything.
+    """
+    path = getattr(a, "body_file", None)
+    if not path:
+        if a.body is None:
+            sys.exit("send: give --body or --body-file")
+        return a.body
+    if a.body is not None:
+        sys.exit("send: --body and --body-file are mutually exclusive")
+    try:
+        if path in ("-", "/dev/stdin"):
+            data = sys.stdin.buffer.read()
+        else:
+            with open(path, "rb") as f:
+                data = f.read()
+    except OSError as e:
+        sys.exit(f"send: cannot read --body-file {path}: {e.strerror}")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        sys.exit(f"send: --body-file is not valid UTF-8: {e}")
+
+
 def cmd_send(a):
+    a.body = _read_body(a)
     p = peers()
     target = None
     for fp, v in p.items():
@@ -663,7 +694,13 @@ def main():
     p.set_defaults(fn=cmd_ack)
     p = s.add_parser("send")
     p.add_argument("--to", required=True)
-    p.add_argument("--body", required=True)
+    p.add_argument("--body", default=None,
+                   help="message text. Prefer --body-file for prose: a body on "
+                        "the command line is shell-expanded before we ever see it, "
+                        "so a literal $(cat file) in the text is executed and "
+                        "replaced by nothing, and trailing blank lines are stripped")
+    p.add_argument("--body-file", default=None, metavar="PATH",
+                   help="read the body from PATH as UTF-8, byte for byte (use - for stdin)")
     p.add_argument("--session", default=None,
                    help="name of THIS session; auto-derived from the harness if omitted")
     p.add_argument("--to-session", default="", help="only deliver to this session name")

@@ -234,7 +234,7 @@ function replyLine(m: RemoteMessage): string {
 	const label = m.from_label || "peer";
 	let out = `inbox_agent.py send --to ${label}`;
 	if (m.from_session) out += ` --to-session ${m.from_session}`;
-	out += ' --body "…"';
+	out += " --body-file <path>";
 	if (!m.from_session) out += "   (peer named no session; this reply cannot be targeted)";
 	return out;
 }
