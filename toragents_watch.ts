@@ -249,7 +249,6 @@ function render(m: RemoteMessage): string {
 		`from: ${who}${fp ? ` (${fp}…)` : ""}`,
 		`id:   ${m.id}`,
 		...(m.to_session ? [`to:   ${m.to_session}`] : []),
-		`from: ${who}`,
 		``,
 		`<<< BEGIN PEER MESSAGE`,
 		body + more,
