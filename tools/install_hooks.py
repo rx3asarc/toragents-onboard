@@ -86,6 +86,49 @@ def hook_entry(command: str, windows_command: str | None = None,
     return entry
 
 
+def badge_command(command: str) -> str:
+    """Turn the hook command into the status-line command.
+
+    The hook command is '"<python>" "<hook>"'; the status line needs --badge
+    appended inside the quoting. Done here rather than in each caller so the two
+    commands can never drift apart.
+    """
+    return command + " --badge"
+
+
+def merge_statusline(cfg: dict, command: str, uninstall: bool) -> int:
+    """Put a persistent one-liner in the human's UI. Returns 1 if changed.
+
+    Why this is here at all: Claude Code gives additionalContext to the model and
+    shows the person nothing, and `systemMessage` -- documented as "Display a
+    message to the user (all hooks)" -- is accepted, logged, and then not rendered
+    in 2.1.302. So a human watching their own chat cannot tell that a message
+    arrived, which defeats the purpose. A status line is redrawn continuously and
+    is always on screen.
+
+    A status line the user already has is NEVER replaced. Ours is recognised by
+    the marker and updated in place; anything else is left alone with a note,
+    because silently taking over someone's status line is exactly the kind of
+    thing this installer refuses to do to a settings file.
+    """
+    cur = cfg.get("statusLine")
+    ours = isinstance(cur, dict) and MARKER in str(cur.get("command", ""))
+    if uninstall:
+        if ours:
+            cfg.pop("statusLine", None)
+            return 1
+        return 0
+    if cur is not None and not ours:
+        log("statusLine: you already have one -- left untouched. To show unread")
+        log(f"statusLine: mail there, add --badge to it: {command}")
+        return 0
+    want = {"type": "command", "command": command, "padding": 0}
+    if cur == want:
+        return 0
+    cfg["statusLine"] = want
+    return 1
+
+
 def merge_hooks(cfg: dict, command: str, windows_command: str | None,
                 uninstall: bool) -> int:
     """Merge our hooks into a harness config. Returns how many event slots changed."""
@@ -134,6 +177,12 @@ def install_one(label: str, path: str, command: str, windows_command: str | None
         return "skipped"
     cfg = cfg or {}
     changed = merge_hooks(cfg, command, windows_command, uninstall)
+    if label == "Claude Code":
+        # <python> <hook> --badge : one line, redrawn with the UI.
+        changed += merge_statusline(cfg, badge_command(command), uninstall)
+    if changed and not uninstall and cfg.get("statusLine", {}).get("command") \
+            and MARKER in cfg["statusLine"]["command"]:
+        log(f"{label}: status line shows unread mail (the --badge line at the bottom)")
     if not changed:
         log(f"{label}: already up to date ({path})")
         return "same"

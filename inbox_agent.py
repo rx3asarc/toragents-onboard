@@ -520,10 +520,17 @@ def auto_session() -> str:
     # No id in the environment: this harness does not tell its children who
     # they are. The hook leaves a note naming the session that last received
     # mail, which is almost always the one replying.
+    #
+    # The window is deliberately short. Measured cost of getting it wrong: a note
+    # written during a one-off diagnostic (session_id "diag-0001") was still being
+    # used twenty minutes later, so every reply from that box claimed to come from
+    # a session that no longer existed, and the header showed a name the human
+    # could not recognise. Fifteen minutes was far too generous; a reply happens
+    # while the session is warm or not at all.
     try:
         with open(os.path.join(STATE, "session.json"), encoding="utf-8") as f:
             note = json.load(f)
-        if isinstance(note, dict) and (time.time() - float(note.get("ts", 0))) < 900:
+        if isinstance(note, dict) and (time.time() - float(note.get("ts", 0))) < 180:
             name = str(note.get("name") or "").strip()
             if name:
                 return name[:64]

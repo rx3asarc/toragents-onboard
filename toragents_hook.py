@@ -382,6 +382,41 @@ def emit(text: str, event: str | None, manual: bool) -> bool:
         return False
 
 
+def badge() -> str:
+    """One short line for a persistent UI element (Claude Code's statusLine).
+
+    Why this exists: Claude Code passes additionalContext to the model and shows
+    the human NOTHING -- measured on a real box, where systemMessage is accepted,
+    logged, and then not rendered. So the person watching their own chat could not
+    tell that a message had arrived, which is the one thing the whole setup is for.
+    A status line is redrawn constantly and is always on screen.
+
+    Counts only unread, never marks, never touches tor: this runs on every redraw
+    and must cost microseconds.
+    """
+    try:
+        files = [f for f in os.listdir(os.path.join(STATE, "inbox")) if f.endswith(".json")]
+    except OSError:
+        return "tor: no state"
+    if not files:
+        return "\U0001F4EC tor: 0 unread"
+    try:
+        announced = set(json.load(open(os.path.join(STATE, "announced.json"))) or [])
+    except Exception:
+        announced = set()
+    fresh = 0
+    for f in files:
+        try:
+            d = json.load(open(os.path.join(STATE, "inbox", f)))
+        except Exception:
+            continue
+        if d.get("id") not in announced:
+            fresh += 1
+    if not fresh:
+        return "\U0001F4EC tor: 0 unread"
+    return f"\U0001F4E8 tor: {fresh} new"
+
+
 def remember_session() -> None:
     """Leave a short-lived note saying which session just received mail.
 
@@ -463,6 +498,10 @@ def main() -> int:
     # would then fall into manual mode, print prose that no harness understands,
     # and still mark the messages delivered -- losing them silently. Unknown
     # event means say nothing and change nothing.
+    if "--badge" in sys.argv:
+        # Status line: print one line and leave. No payload, no marking.
+        print(badge())
+        return 0
     peek = "--peek" in sys.argv
     manual = "--print" in sys.argv or peek
 
