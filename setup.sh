@@ -194,10 +194,13 @@ ok "tor: $TORBIN"
 
 # --------------------------------------------------------------- layout ---
 mkdir -p "$HOME_DIR"
+# state/ is always created: state/config.json is written even in a dry run, and
+# a missing parent made that write fail silently in the dry-run path.
+mkdir -p "$HOME_DIR/state/inbox" "$HOME_DIR/state/archive"
 if [ "$DRY" = 1 ]; then
   say "dry-run: writing files under $HOME_DIR, no services started"
 else
-  mkdir -p "$HOME_DIR/hs" "$HOME_DIR/tor-data" "$HOME_DIR/state/inbox" "$HOME_DIR/state/archive"
+  mkdir -p "$HOME_DIR/hs" "$HOME_DIR/tor-data"
   chmod 700 "$HOME_DIR/tor-data" "$HOME_DIR/hs"
 fi
 
