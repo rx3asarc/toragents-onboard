@@ -144,6 +144,11 @@ never silently dropped.
 An injected message is the agent's business. Whether the person watching the chat
 sees anything depends on the harness:
 
+If you already run a status line, `install_hooks.py` will not replace it. Add
+`--join-statusline` and it keeps yours and appends the badge, saving your original
+command to `<state>/statusline.original.json` so deleting that file puts things
+back.
+
 | harness | the agent gets it | the human sees it |
 |---|---|---|
 | pi | yes, in-transcript | **yes** — it is a normal message |

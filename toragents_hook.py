@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -382,6 +383,40 @@ def emit(text: str, event: str | None, manual: bool) -> bool:
         return False
 
 
+def statusline() -> str:
+    """The user's own status line, then ours. Never instead of theirs.
+
+    Plenty of people already run a status line (this was found on a box using
+    gsd's statusline.js). Replacing it to show unread mail is a bad trade, and so
+    is refusing to show anything. So we chain: run whatever was there, keep its
+    output, and append the badge.
+
+    The original command is stored beside the state at install time, so this
+    stays reversible -- delete one file and the old line comes back.
+    """
+    parts = []
+    orig = os.path.join(STATE, "statusline.original.json")
+    try:
+        with open(orig, encoding="utf-8") as f:
+            cmd = json.load(f).get("command") or ""
+    except (OSError, ValueError):
+        cmd = ""
+    if cmd:
+        try:
+            # Short leash: a status line is redrawn constantly and a hung child
+            # would freeze the whole UI. Losing their line for one redraw is
+            # better than losing the interface.
+            r = subprocess.run(cmd, shell=True, capture_output=True, timeout=4,
+                               text=True, errors="replace")
+            first = (r.stdout or "").strip().splitlines()
+            if first:
+                parts.append(first[0][:200])
+        except (subprocess.SubprocessError, OSError):
+            pass
+    parts.append(badge())
+    return " \u00b7 ".join(p for p in parts if p)
+
+
 def badge() -> str:
     """One short line for a persistent UI element (Claude Code's statusLine).
 
@@ -498,6 +533,9 @@ def main() -> int:
     # would then fall into manual mode, print prose that no harness understands,
     # and still mark the messages delivered -- losing them silently. Unknown
     # event means say nothing and change nothing.
+    if "--statusline" in sys.argv:
+        print(statusline())
+        return 0
     if "--badge" in sys.argv:
         # Status line: print one line and leave. No payload, no marking.
         print(badge())

@@ -86,17 +86,18 @@ def hook_entry(command: str, windows_command: str | None = None,
     return entry
 
 
-def badge_command(command: str) -> str:
-    """Turn the hook command into the status-line command.
+def statusline_command(command: str) -> str:
+    """The hook command, switched to status-line mode.
 
-    The hook command is '"<python>" "<hook>"'; the status line needs --badge
-    appended inside the quoting. Done here rather than in each caller so the two
-    commands can never drift apart.
+    Done in one place so the hook command and the status-line command can never
+    drift apart: same interpreter, same script, different flag.
     """
-    return command + " --badge"
+    assert "toragents_hook.py" in command, command
+    return command + " --statusline"
 
 
-def merge_statusline(cfg: dict, command: str, uninstall: bool) -> int:
+def merge_statusline(cfg: dict, command: str, uninstall: bool,
+                     join: bool = False, orig_path: str = "", dry: bool = False) -> int:
     """Put a persistent one-liner in the human's UI. Returns 1 if changed.
 
     Why this is here at all: Claude Code gives additionalContext to the model and
@@ -119,9 +120,20 @@ def merge_statusline(cfg: dict, command: str, uninstall: bool) -> int:
             return 1
         return 0
     if cur is not None and not ours:
-        log("statusLine: you already have one -- left untouched. To show unread")
-        log(f"statusLine: mail there, add --badge to it: {command}")
-        return 0
+        if not join:
+            log("statusLine: you already have one -- left untouched. To show unread")
+            log("statusLine: mail inside it, re-run with --join-statusline and it")
+            log("statusLine: will be kept and the badge appended to it.")
+            return 0
+        orig_cmd = str(cur.get("command") or "") if isinstance(cur, dict) else ""
+        if not orig_cmd:
+            log("statusLine: existing entry has no command -- left untouched.")
+            return 0
+        # remember theirs, then point the setting at our chained version
+        save_json(os.path.join(orig_path), {"command": orig_cmd}, dry)
+        log(f"statusLine: kept your existing line, saved as {os.path.basename(orig_path)}")
+        cfg["statusLine"] = {"type": "command", "command": command, "padding": 0}
+        return 1
     want = {"type": "command", "command": command, "padding": 0}
     if cur == want:
         return 0
@@ -168,7 +180,8 @@ def merge_hooks(cfg: dict, command: str, windows_command: str | None,
 
 
 def install_one(label: str, path: str, command: str, windows_command: str | None,
-                dry: bool, uninstall: bool) -> str:
+                dry: bool, uninstall: bool, join: bool = False,
+                home: str = "") -> str:
     """Returns written | same | skipped."""
     cfg, status = load_json(path)
     if status == "unreadable" or status.startswith("corrupt"):
@@ -179,7 +192,16 @@ def install_one(label: str, path: str, command: str, windows_command: str | None
     changed = merge_hooks(cfg, command, windows_command, uninstall)
     if label == "Claude Code":
         # <python> <hook> --badge : one line, redrawn with the UI.
-        changed += merge_statusline(cfg, badge_command(command), uninstall)
+        changed += merge_statusline(
+            cfg, statusline_command(command), uninstall,
+            join=join, dry=dry,
+            # MUST be the directory the hook resolves as STATE, or the saved
+            # original is written where only the installer can see it and the
+            # status line silently drops the user's own command.
+            orig_path=os.path.join(
+                os.environ.get("TORAGENTS_STATE")
+                or os.path.join(home, ".toragents", "state"),
+                "statusline.original.json"))
     if changed and not uninstall and cfg.get("statusLine", {}).get("command") \
             and MARKER in cfg["statusLine"]["command"]:
         log(f"{label}: status line shows unread mail (the --badge line at the bottom)")
@@ -257,6 +279,10 @@ def main() -> int:
     ap.add_argument("--home", default=os.path.expanduser("~"))
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--uninstall", action="store_true")
+    ap.add_argument("--join-statusline", action="store_true",
+                    help="keep the user's existing status line and append the "
+                         "unread badge to it (reversible: the original command is "
+                         "saved beside the state)")
     ap.add_argument("--no-verify", action="store_true", help="skip the live harness check")
     ap.add_argument("--claude-bin", default=None, help="override the claude executable")
     a = ap.parse_args()
@@ -289,7 +315,8 @@ def main() -> int:
     if os.path.isdir(claude) or claude_bin:
         found.append("claude")
         claude_result = install_one("Claude Code", os.path.join(claude, "settings.json"),
-                                    command, None, a.dry_run, a.uninstall)
+                                    command, None, a.dry_run, a.uninstall,
+                                    join=a.join_statusline, home=a.home)
     if os.path.isdir(codex) or shutil.which("codex"):
         found.append("codex")
         install_one("Codex", os.path.join(codex, "hooks.json"),

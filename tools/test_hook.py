@@ -183,6 +183,45 @@ check("systemMessage does NOT leak the body", "private content" not in sm, sm)
 check("additionalContext still delivered to the agent",
       "private content" in j.get("hookSpecificOutput", {}).get("additionalContext", ""))
 
+# ---- the status line: the only surface a human actually sees ----------------
+# additionalContext is invisible, systemMessage is accepted-and-not-rendered in
+# 2.1.302, so this line is the feature. It must never crash, never mark, and it
+# must not eat a status line the user already had.
+def run_arg(d, flag):
+    e = dict(os.environ, TORAGENTS_HOME=d); e.pop("TORAGENTS_STATE", None)
+    p = subprocess.run([PY, HOOK, flag], capture_output=True, env=e)
+    return p.returncode, p.stdout.decode("utf-8", "replace").strip()
+
+d7 = mkstate(0)
+rc, out = run_arg(d7, "--badge")
+check("badge: empty inbox says so", rc == 0 and "0 unread" in out, out)
+
+d8 = mkstate(2)
+rc, out = run_arg(d8, "--badge")
+check("badge: counts unread", "2 new" in out, out)
+
+rc, out = run_arg(d8, "--badge")
+check("badge: does not mark (still 2 after reading)", "2 new" in out, out)
+check("badge: nothing was marked", ann(d8) in (None, []), str(ann(d8)))
+
+# their status line is preserved and ours is appended
+d9 = mkstate(1)
+with open(os.path.join(d9, "state", "statusline.original.json"), "w") as f:
+    json.dump({"command": "echo THEIRS"}, f)
+rc, out = run_arg(d9, "--statusline")
+check("status line: keeps the user's own", "THEIRS" in out, out)
+check("status line: appends the badge", "new" in out, out)
+
+# a broken or missing original must never take the badge down with it
+d10 = mkstate(1)
+with open(os.path.join(d10, "state", "statusline.original.json"), "w") as f:
+    json.dump({"command": "exit 3"}, f)
+rc, out = run_arg(d10, "--statusline")
+check("status line: survives a failing original", rc == 0 and "new" in out, out)
+
+rc, out = run_arg(mkstate(1), "--statusline")
+check("status line: works with no saved original", rc == 0 and "new" in out, out)
+
 check("--peek never marks", run(d3, {}, "--peek")[1] != "" and ann(d3) is None)
 
 print(f"\n  {PASS} passed, {FAIL} failed")
