@@ -356,6 +356,10 @@ class Inbox:
         rec = {"id": mid, "received": time.time(), "from_fingerprint": fp,
                "from_label": peer.get("label", ""), "from_onion": peer.get("onion", ""),
                "body": body}
+        for f in ("from_session", "to_session"):
+            v = req.get(f)
+            if isinstance(v, str) and v.strip():
+                rec[f] = v.strip()[:64]
         path = os.path.join(INBOX, f"{time.time():.0f}-{mid}.json")
         with open(path + ".tmp", "w") as f:
             json.dump(rec, f, indent=2)
@@ -443,7 +447,7 @@ def dial(target_onion, timeout=None):
         f"  Check the peer is running and tor is up on 127.0.0.1:{SOCKS_PORT}.")
 
 
-def send_to(target_onion, body, k=None):
+def send_to(target_onion, body, k=None, session=None, to_session=None):
     k = k or need_keys()             # never sign with a freshly minted key
     sock = dial(target_onion)
     try:
@@ -452,9 +456,18 @@ def send_to(target_onion, body, k=None):
         if not hello or not hello.get("ok"):
             raise RuntimeError(f"hello refused: {hello}")
         nonce = b64d(hello["nonce"])
-        send_msg(sock, {"op": "send", "nonce": hello["nonce"], "body": body,
-                        "pubkey": k.public().to_dict(),
-                        "sig": b64e(k.sign(nonce + body.encode("utf-8")))})
+        payload = {"op": "send", "nonce": hello["nonce"], "body": body,
+                   "pubkey": k.public().to_dict(),
+                   "sig": b64e(k.sign(nonce + body.encode("utf-8")))}
+        # Session names are ADVISORY labels, deliberately outside the signature:
+        # the peer is authenticated by key, and which of that peer's live
+        # sessions is talking is not something the signature can bind anyway.
+        # Old receivers ignore these fields, so this stays compatible.
+        if session:
+            payload["from_session"] = session
+        if to_session:
+            payload["to_session"] = to_session
+        send_msg(sock, payload)
         return recv_msg(sock)
     finally:
         try:
@@ -547,7 +560,12 @@ def cmd_inbox(a):
         print("(inbox empty)")
     for m in ms:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(m.get("received", 0)))
-        print(f"{m['id']}  {when}  {m.get('from_label','?'):16} "
+        who = m.get("from_label", "?")
+        if m.get("from_session"):
+            who = f"{who}/{m['from_session']}"
+        if m.get("to_session"):
+            who = f"{who} -> {m['to_session']}"
+        print(f"{m['id']}  {when}  {who[:30]:30} "
               f"{(m.get('body') or '').replace(chr(10),' ')[:60]}")
 
 
@@ -577,7 +595,9 @@ def cmd_send(a):
             break
     if target is None:
         sys.exit(f"unknown peer {a.to!r}; try: inbox_agent.py peers")
-    reply = send_to(target["onion"], a.body)
+    reply = send_to(target["onion"], a.body,
+                    session=getattr(a, "session", "") or None,
+                    to_session=getattr(a, "to_session", "") or None)
     print(json.dumps(reply, indent=2))
     sys.exit(0 if reply and reply.get("ok") else 1)
 
@@ -607,6 +627,9 @@ def main():
     p = s.add_parser("send")
     p.add_argument("--to", required=True)
     p.add_argument("--body", required=True)
+    p.add_argument("--session", default=os.environ.get("TORAGENTS_SESSION", ""),
+                   help="name of THIS session, stamped on the message")
+    p.add_argument("--to-session", default="", help="only deliver to this session name")
     p.set_defaults(fn=cmd_send)
     a = ap.parse_args()
     a.fn(a)

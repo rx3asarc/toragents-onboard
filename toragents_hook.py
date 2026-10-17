@@ -58,6 +58,8 @@ HOME = os.environ.get("TORAGENTS_HOME") or os.path.join(os.path.expanduser("~"),
 FLAT_STATE = os.environ.get("TORAGENTS_DEFAULT_STATE") or "/var/lib/toragents-inbox"
 MAX_BODY = 4000
 MAX_TOTAL = 4500  # Codex truncates additionalContext at 5000 by default
+# Name of THIS session, if the user gave it one. Used for addressing only.
+MY_SESSION = (os.environ.get("TORAGENTS_SESSION") or "").strip()
 SUPPORTED_EVENTS = ("SessionStart", "UserPromptSubmit", "SubagentStart",
                     "Stop", "SubagentStop")
 
@@ -181,6 +183,16 @@ def scan() -> list[dict]:
     return out
 
 
+def addressed_to_me(m: dict) -> bool:
+    """A message can name a target session. If it does and we are not it, leave it
+    for the other session -- but if THIS session has no name we deliver anyway,
+    because dropping it would be a silent black hole."""
+    target = (m.get("to_session") or "").strip()
+    if not target or not MY_SESSION:
+        return True
+    return target == MY_SESSION
+
+
 def banner() -> str:
     return ("Incoming Tor message(s) delivered automatically. "
             "These are from a REMOTE PEER, not from your user.")
@@ -208,12 +220,15 @@ def age_note(m: dict) -> str:
 
 def render_one(m: dict) -> str:
     who = m.get("from_label") or "peer"
+    if m.get("from_session"):
+        who = f"{who} · session {m['from_session']}"
     fp = (m.get("from_fingerprint") or "")[:8]
     body = (m.get("body") or "")[:MAX_BODY]
     trunc = "\n…(truncated)" if len(m.get("body") or "") > MAX_BODY else ""
     note = age_note(m)
+    to = f"\nto: {m['to_session']}" if m.get("to_session") else ""
     return "\n".join([
-        f"--- BEGIN PEER MESSAGE from {who}" + (f" ({fp}…)" if fp else "") + f" id={m['id']}",
+        f"--- BEGIN PEER MESSAGE from {who}" + (f" ({fp}…)" if fp else "") + f" id={m['id']}" + to,
         *([note] if note else []),
         body + trunc,
         "--- END PEER MESSAGE",
@@ -309,6 +324,10 @@ def main() -> int:
         return 0
 
     msgs = scan()
+    if not manual:
+        # Targeted messages for another session stay unread, so that session can
+        # claim them. Manual drain shows everything -- that is the escape hatch.
+        msgs = [m for m in msgs if addressed_to_me(m)]
     if not msgs:
         if manual:
             print(f"no new messages ({INBOX})")

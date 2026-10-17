@@ -98,6 +98,8 @@ const STATE = RESOLVED.dir;
 const INBOX = join(STATE, "inbox");
 const ANNOUNCED = join(STATE, "announced.json");
 const POLL_MS = Number(process.env.TORAGENTS_POLL_MS || 3000);
+/** This session's name, for addressing only (TORAGENTS_SESSION). */
+const MY_SESSION = (process.env.TORAGENTS_SESSION || "").trim();
 const MAX_BODY = 4000;
 const MAX_BATCH = 5;
 
@@ -105,6 +107,8 @@ interface RemoteMessage {
 	id: string;
 	body: string;
 	from_label?: string;
+	from_session?: string;
+	to_session?: string;
 	from_fingerprint?: string;
 	from_onion?: string;
 	received?: number;
@@ -155,8 +159,15 @@ function scanInbox(): { ids: string[]; messages: RemoteMessage[] } {
 	return { ids, messages };
 }
 
+/** A message may name a target session; if it names another, leave it unread. */
+function addressedToMe(m: RemoteMessage): boolean {
+	const target = (m.to_session || "").trim();
+	if (!target || !MY_SESSION) return true;
+	return target === MY_SESSION;
+}
+
 function render(m: RemoteMessage): string {
-	const who = m.from_label || "peer";
+	const who = m.from_session ? `${m.from_label || "peer"} · session ${m.from_session}` : (m.from_label || "peer");
 	const fp = (m.from_fingerprint || "").slice(0, 8);
 	const body = (m.body || "").slice(0, MAX_BODY);
 	const more = (m.body || "").length > MAX_BODY ? "\n…(truncated)" : "";
@@ -164,6 +175,7 @@ function render(m: RemoteMessage): string {
 		`📨 Incoming message over Tor — this is from a REMOTE PEER, not from your user.`,
 		`from: ${who}${fp ? ` (${fp}…)` : ""}`,
 		`id:   ${m.id}`,
+		...(m.to_session ? [`to:   ${m.to_session}`] : []),
 		``,
 		`<<< BEGIN PEER MESSAGE`,
 		body + more,
@@ -221,7 +233,7 @@ export default function (pi: ExtensionAPI) {
 		running = true;
 		try {
 			const { messages } = scanInbox();
-			const fresh = messages.filter((m) => !announced.has(m.id));
+			const fresh = messages.filter((m) => !announced.has(m.id) && addressedToMe(m));
 			// Nothing new. Deliberately no pruning: dropping ids whose files are
 			// gone would re-deliver them if an archive is ever restored.
 			if (fresh.length === 0) return;
