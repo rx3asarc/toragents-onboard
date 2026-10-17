@@ -150,7 +150,8 @@ def install_one(label: str, path: str, command: str, windows_command: str | None
     return "written"
 
 
-def verify_claude(settings_path: str, claude_bin: str) -> tuple[bool, str]:
+def verify_claude(settings_path: str, claude_bin: str) -> tuple[bool | None, str]:
+    """True = proven, False = proven broken, None = could not tell."""
     """Ask the REAL binary whether it accepts the config we just wrote.
 
     This exists because a malformed settings.json fails completely silently:
@@ -180,7 +181,11 @@ def verify_claude(settings_path: str, claude_bin: str) -> tuple[bool, str]:
         logs = sorted(glob.glob(os.path.join(home, ".claude", "debug", "*.txt")),
                       key=os.path.getmtime)
         if not logs:
-            return False, "claude produced no debug log"
+            # Cannot tell. On Windows `claude` is usually an npm .cmd shim, which
+            # needs a shell to spawn; the run produces no log at all. Reporting
+            # that as NOT VERIFIED told a user with a perfectly working install
+            # that it was broken -- so it is reported as inconclusive instead.
+            return None, "the harness left no debug log (normal on Windows shims)"
         txt = open(logs[-1], errors="replace").read()
         if "parsed and validated hook JSON output" not in txt:
             return False, "claude ran but never validated our hook output"
@@ -242,8 +247,12 @@ def main() -> int:
     if "claude" in found and claude_result in ("written", "same") and not a.uninstall and not a.dry_run:
         if not a.no_verify and claude_bin:
             ok, why = verify_claude(os.path.join(claude, "settings.json"), claude_bin)
-            log(f"Claude Code: {'VERIFIED' if ok else 'NOT VERIFIED'} -- {why}")
-            if not ok:
+            verdict = "VERIFIED" if ok else ("COULD NOT VERIFY" if ok is None else "NOT VERIFIED")
+            log(f"Claude Code: {verdict} -- {why}")
+            if ok is None:
+                log("Claude Code: this is not a failure. Open a session; if messages")
+                log("Claude Code: do not arrive, run: claude --init-only --debug")
+            if ok is False:
                 log("Claude Code: the hooks are written but the harness did not accept them.")
                 log("Claude Code: check ~/.claude/settings.json, or run with --no-verify.")
         elif not claude_bin:
