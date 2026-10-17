@@ -86,15 +86,40 @@ find_python() {
   return 1
 }
 
+# Portable CPython from python-build-standalone: no package manager, no admin,
+# same artifact for every OS/arch. This is what makes python a non-requirement.
+PBS_TAG="${TORAGENTS_PBS_TAG:-20261013}"
+PBS_VER="${TORAGENTS_PBS_VER:-3.11.17}"
+
+install_portable_python() {
+  local trip
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64)   trip=aarch64-apple-darwin ;;
+    Darwin-x86_64)  trip=x86_64-apple-darwin ;;
+    Linux-x86_64)   trip=x86_64-unknown-linux-gnu ;;
+    Linux-aarch64)  trip=aarch64-unknown-linux-gnu ;;
+    Linux-arm64)    trip=aarch64-unknown-linux-gnu ;;
+    *) return 1 ;;
+  esac
+  local url="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_VER}+${PBS_TAG}-${trip}-install_only.tar.gz"
+  mkdir -p "$HOME_DIR/python"
+  curl -fsSL "$url" | tar xz -C "$HOME_DIR/python" --strip-components=1 || return 1
+  local c="$HOME_DIR/python/bin/python3"
+  [ -x "$c" ] || return 1
+  echo "$c"
+}
+
 PY="$(find_python python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 || true)"
 if [ -z "$PY" ]; then
-  say "No usable python3 (3.10+) found"
-  if [ "$OS" = mac ]; then
-    printf '  macOS no longer bundles python. Install one of:\n'
-    printf '    xcode-select --install      (gives you python3)\n'
-    printf '    %s install python          (if Homebrew is installed)\n' "${BREW:-brew}"
+  say "No system python3 (3.10+) found -- fetching a portable one"
+  if [ "$DRY" = 1 ]; then
+    warn "dry-run: would download portable cpython $PBS_VER"
+    PY=/tmp/portable/python/bin/python3
+  else
+    PY="$(install_portable_python || true)"
+    [ -n "$PY" ] || die "could not fetch portable python for $(uname -s)-$(uname -m).
+  Install python3.10+ manually and re-run, or set TORAGENTS_PBS_TAG/VER."
   fi
-  die "install python3.10+ then re-run"
 fi
 ok "python: $PY ($("$PY" -c 'import sys;print("%d.%d.%d"%sys.version_info[:3])'))"
 
@@ -103,13 +128,21 @@ ok "python: $PY ($("$PY" -c 'import sys;print("%d.%d.%d"%sys.version_info[:3])')
 # so a Mac without brew can still run this. Nothing to compile.
 TOR_BUNDLE_VER="${TORAGENTS_TOR_BUNDLE:-15.0.25}"
 install_tor_expert_bundle() {
-  local arch url
-  case "$(uname -m)" in
-    arm64|aarch64) arch=aarch64 ;;
-    x86_64)        arch=x86_64 ;;
+  local plat arch url
+  # torproject publishes: macos aarch64/x86_64, linux x86_64, windows x86_64.
+  # Linux arm64 has no bundle -- it falls back to the package manager.
+  case "$(uname -s)" in
+    Darwin) plat=macos ;;
+    Linux)  plat=linux ;;
     *) return 1 ;;
   esac
-  url="https://dist.torproject.org/torbrowser/${TOR_BUNDLE_VER}/tor-expert-bundle-macos-${arch}-${TOR_BUNDLE_VER}.tar.gz"
+  case "$(uname -m)" in
+    arm64|aarch64) arch=aarch64 ;;
+    x86_64|amd64)  arch=x86_64 ;;
+    *) return 1 ;;
+  esac
+  [ "$plat-$arch" = "linux-aarch64" ] && return 1
+  url="https://dist.torproject.org/torbrowser/${TOR_BUNDLE_VER}/tor-expert-bundle-${plat}-${arch}-${TOR_BUNDLE_VER}.tar.gz"
   mkdir -p "$HOME_DIR/tor-bin"
   curl -fsSL "$url" | tar xz -C "$HOME_DIR/tor-bin" || return 1
   local t
@@ -143,10 +176,14 @@ if [ -z "$TORBIN" ]; then
     elif command -v dnf >/dev/null 2>&1; then
       sudo dnf install -y tor
     else
-      die "no supported package manager; install 'tor' manually and re-run"
+      warn "no package manager; using the official tor expert bundle"
+      TORBIN="$(install_tor_expert_bundle || true)"
+      [ -n "$TORBIN" ] || die "no tor and no bundle available for $(uname -s)-$(uname -m).
+  Install tor manually and re-run."
     fi
     TORBIN="$(find_tor || true)"
-    [ -n "$TORBIN" ] || die "tor installed but not found"
+    [ -n "$TORBIN" ] || TORBIN="$HOME_DIR/tor-bin/tor/tor"
+    [ -x "$TORBIN" ] || die "tor installed but not found"
   fi
 fi
 ok "tor: $TORBIN"
