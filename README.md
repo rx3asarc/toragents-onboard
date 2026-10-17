@@ -169,6 +169,20 @@ Claude Code 2.1.302 binary: one process accepts turn after turn on stdin, same
 "<python>" "<home>/toragents_session.py" --permission-mode plan
 ```
 
+How it behaves, verified against the real binary:
+
+| situation | what happens |
+|---|---|
+| one message arrives | one turn |
+| six arrive at once | **one** turn carrying all six — the harness would otherwise run six model turns |
+| messages arrive mid-turn | queued by the harness, then coalesced into the next turn |
+| a turn finishes | `{"type":"result","result_index":N}` is the receipt; the daemon won't inject again until it arrives |
+| the harness dies | respawned with `--resume`, same conversation |
+
+The harness queues turns in order and **never rejects one** — there is no
+rejection path to handle. It also re-emits `system/init` on every turn, which is
+not a new session; the session id is stable.
+
 **What you give up:** the interactive TUI. You read the conversation through the
 daemon's stdout. Claude keeps no second window on it — and if you *also* have an
 open TUI on that session id, both processes run without complaint and silently
@@ -194,6 +208,18 @@ that one peer is enough.
 In supervisor mode the harness still runs your hooks inside its own process, so
 the hook and the daemon can both try to deliver. One shared `announced.json`
 means each message is delivered once, by whichever gets there first.
+
+### Reaching into an open TUI is not supported
+
+Claude Code opens a per-user socket (`messaging_socket_path`) and advertises
+control vocabulary (`control_request`, `interrupt`, `send_now`,
+`set_permission_mode`). That protocol runs between the CLI and **the process that
+spawned it** — i.e. your supervisor. Probing the socket from outside got
+connections but no responses: it is an undocumented, version-unstable private
+channel, not an API. Driving a TUI you did not spawn through it would be a hack
+that breaks on the next release, in a tool that ships to strangers. A supervised
+session is the only supported way to get delivery while idle; the docs say so
+rather than pretending otherwise.
 
 ### Not solved: waking an *interactive* session
 

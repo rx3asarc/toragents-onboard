@@ -42,6 +42,7 @@ HOME = os.environ.get("TORAGENTS_HOME") or os.path.join(os.path.expanduser("~"),
 FLAT_STATE = os.environ.get("TORAGENTS_DEFAULT_STATE") or "/var/lib/toragents-inbox"
 POLL = float(os.environ.get("TORAGENTS_SESSION_POLL") or 2)
 MAX_BODY = 4000
+MAX_TURN = 12000   # one turn carries as much backlog as is sensible at once
 
 
 def resolve_state() -> str:
@@ -135,6 +136,8 @@ class Session:
         self.session_id: str | None = None
         self.busy = False
         self.result_index = 0
+        self.results = 0          # results seen
+        self.expected_index = None
         self.restarts = 0
 
     def start(self, resume: str | None) -> bool:
@@ -168,15 +171,26 @@ class Session:
                 continue
             kind = ev.get("type")
             if kind == "system" and ev.get("subtype") == "init":
-                self.session_id = ev.get("session_id") or self.session_id
-                say(f"[session] harness ready (session {self.session_id})")
+                # Emitted on EVERY turn, not once. A second init is not a new
+                # session -- the id is stable -- so only speak when it changes.
+                new_id = ev.get("session_id") or self.session_id
+                if new_id != self.session_id:
+                    self.session_id = new_id
+                    say(f"[session] harness ready (session {self.session_id})")
             elif kind == "assistant":
                 for block in (ev.get("message") or {}).get("content") or []:
                     if block.get("type") == "text" and block.get("text"):
                         say(f"\n{block['text']}\n")
             elif kind == "result":
-                # The turn boundary. Only now is it safe to inject the next one.
-                self.result_index = ev.get("result_index", self.result_index + 1)
+                # The turn boundary, and a per-turn receipt. Only now is it safe
+                # to inject the next one.
+                idx = ev.get("result_index")
+                if isinstance(idx, int):
+                    if self.expected_index is not None and idx - self.expected_index > 1:
+                        say(f"[session] note: harness skipped from result {self.expected_index} "
+                            f"to {idx} -- a turn completed that we did not inject")
+                    self.expected_index = idx + 1
+                self.results += 1
                 self.busy = False
                 if ev.get("is_error") and ev.get("result"):
                     say(f"[session] harness reported: {ev['result']}")
@@ -270,7 +284,14 @@ def main() -> int:
             # 3. inject one turn whenever the harness is idle
             if not sess.busy and not pending.empty():
                 batch = [pending.get()]
-                while not pending.empty() and len(batch) < 5:
+                # Everything waiting goes into THIS turn, because the harness
+                # would otherwise run them as separate turns: N model turns for
+                # N messages, delivered late. Bounded by size so one enormous
+                # backlog cannot produce an unusable turn.
+                while not pending.empty():
+                    candidate = pending.queue[0]
+                    if len(as_turn_text(batch + [candidate])) > MAX_TURN or len(batch) >= 20:
+                        break
                     batch.append(pending.get())
                 text = as_turn_text(batch)
                 ids = [m["id"] for m in batch]
