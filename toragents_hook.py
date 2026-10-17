@@ -333,6 +333,27 @@ def emit(text: str, event: str | None, manual: bool) -> bool:
         return False
 
 
+def remember_session() -> None:
+    """Leave a short-lived note saying which session just received mail.
+
+    Some harnesses do not export their session id to the processes they spawn,
+    so a plain `inbox_agent.py send` would go out unlabelled. The session that
+    just received a message is almost certainly the one replying, so it records
+    itself here and the CLI picks it up. Best effort: never fail a delivery
+    because this could not be written.
+    """
+    if not MY_SESSION:
+        return
+    try:
+        path = os.path.join(STATE, "session.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"name": MY_SESSION, "ts": time.time()}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def main() -> int:
     global MY_SESSION
     setup_stdout()
@@ -352,6 +373,7 @@ def main() -> int:
     # The payload is the only place the harness says WHICH session we are, so the
     # name has to be derived here rather than at import time.
     MY_SESSION = _auto_session(payload if isinstance(payload, dict) else None)
+    remember_session()
 
     if "--event" in sys.argv:
         event = sys.argv[sys.argv.index("--event") + 1]

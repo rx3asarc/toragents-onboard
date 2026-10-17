@@ -469,6 +469,18 @@ def auto_session() -> str:
         v = (os.environ.get(var) or "").strip()
         if v:
             return f"{prefix}-{v.replace('-', '')[:8]}"
+    # No id in the environment: this harness does not tell its children who
+    # they are. The hook leaves a note naming the session that last received
+    # mail, which is almost always the one replying.
+    try:
+        with open(os.path.join(STATE, "session.json"), encoding="utf-8") as f:
+            note = json.load(f)
+        if isinstance(note, dict) and (time.time() - float(note.get("ts", 0))) < 900:
+            name = str(note.get("name") or "").strip()
+            if name:
+                return name[:64]
+    except (OSError, ValueError, TypeError):
+        pass
     return ""
 
 
