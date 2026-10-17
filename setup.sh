@@ -11,6 +11,11 @@
 #   TORAGENTS_FORCE_OS=mac bash setup.sh --dry-run --peer-onion x.onion --peer-fp 0123...
 set -euo pipefail
 
+# Bumped on every release. Companion files are fetched from this ref, so a
+# pinned one-liner installs matching code even when main has moved on.
+REPO_REF="v0.1.0"
+REPO_RAW="https://raw.githubusercontent.com/rx3asarc/toragents-onboard/${REPO_REF}"
+
 HOME_DIR="${TORAGENTS_HOME:-$HOME/.toragents}"
 PORT="${TORAGENTS_PORT:-8799}"
 SOCKS="${TORAGENTS_SOCKS:-9061}"     # NOT 9050: that is a homebrew tor's default
@@ -146,6 +151,7 @@ fi
 ok "tor: $TORBIN"
 
 # --------------------------------------------------------------- layout ---
+mkdir -p "$HOME_DIR"
 if [ "$DRY" = 1 ]; then
   say "dry-run: writing files under $HOME_DIR, no services started"
 else
@@ -177,13 +183,22 @@ if [ "$DRY" = 0 ]; then
 fi
 ok "venv: $VPY"
 
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo .)"
+# The one-liner is `curl | bash`, so there is no script directory to copy
+# from: BASH_SOURCE is "bash" and dirname is ".". Fetch the companion files
+# from the pinned ref instead, and fall back to local copies for a git clone.
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
 for f in inbox_agent.py wire.py; do
-  if [ -f "$SRC_DIR/$f" ]; then cp "$SRC_DIR/$f" "$HOME_DIR/$f"
-  elif [ -f "./$f" ]; then cp "./$f" "$HOME_DIR/$f"
-  else die "cannot find $f next to setup.sh"; fi
+  if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/$f" ]; then
+    cp "$SRC_DIR/$f" "$HOME_DIR/$f"
+    ok "installed $f (local)"
+  elif curl -fsSL "$REPO_RAW/$f" -o "$HOME_DIR/$f" 2>/dev/null && [ -s "$HOME_DIR/$f" ]; then
+    ok "installed $f (from $REPO_REF)"
+  else
+    die "could not obtain $f
+  Tried alongside the script and $REPO_RAW/$f
+  Check your network, or clone the repo and run ./setup.sh"
+  fi
 done
-ok "daemon installed"
 
 # -------------------------------------------------------------- services ---
 say "Installing background services"
