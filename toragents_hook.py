@@ -184,13 +184,18 @@ def scan() -> list[dict]:
 
 
 def addressed_to_me(m: dict) -> bool:
-    """A message can name a target session. If it does and we are not it, leave it
-    for the other session -- but if THIS session has no name we deliver anyway,
-    because dropping it would be a silent black hole."""
+    """Untargeted mail is first-come. Targeted mail belongs to the session it names.
+
+    A session with no name does NOT take targeted mail. That rule exists because
+    the opposite one caused a real problem: an unnamed pi session polling every
+    3s silently claimed messages addressed to somebody else, and they were gone
+    before the addressed session ever looked. Being addressable means being
+    named; unaddressed mail still needs no name.
+    """
     target = (m.get("to_session") or "").strip()
-    if not target or not MY_SESSION:
+    if not target:
         return True
-    return target == MY_SESSION
+    return bool(MY_SESSION) and target == MY_SESSION
 
 
 def banner() -> str:

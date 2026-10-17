@@ -159,11 +159,15 @@ function scanInbox(): { ids: string[]; messages: RemoteMessage[] } {
 	return { ids, messages };
 }
 
-/** A message may name a target session; if it names another, leave it unread. */
+/**
+ * Untargeted mail is first-come. Targeted mail belongs to the session it names,
+ * and an unnamed session does not take it -- otherwise a polling session steals
+ * mail addressed to another one before it can look.
+ */
 function addressedToMe(m: RemoteMessage): boolean {
 	const target = (m.to_session || "").trim();
-	if (!target || !MY_SESSION) return true;
-	return target === MY_SESSION;
+	if (!target) return true;
+	return MY_SESSION !== "" && target === MY_SESSION;
 }
 
 function render(m: RemoteMessage): string {

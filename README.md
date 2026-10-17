@@ -109,10 +109,35 @@ inbox_agent.py send --to box --session gale --to-session gale-fork-1 --body "for
 ```
 
 Messages then arrive labelled `from: box · session gale` and, if targeted, with a
-`to:` line. A session sets its own name with `TORAGENTS_SESSION`; a message
-addressed to a different name stays **unread** so that session can take it. A
-session with no name receives everything rather than dropping what it cannot
-place — silence would be worse than a message meant for someone else.
+`to:` line. A session sets its own name with `TORAGENTS_SESSION`.
+
+The rule, and why it is not the obvious one:
+
+| message | who may claim it |
+|---|---|
+| untargeted | whoever looks first — pi's 3s poll usually wins |
+| targeted at `X` | **only** a session named `X` |
+
+A session with **no name does not take targeted mail.** The opposite rule caused
+a real failure: an unnamed pi session, polling every three seconds, silently
+claimed messages addressed to somebody else and they were gone before the
+addressed session ever looked. Being addressable means being named; ordinary
+untargeted mail still needs no name.
+
+So if you run pi and Claude Code on one machine and want mail to reach Claude
+specifically, name both and target:
+
+```bash
+# pi
+$ TORAGENTS_SESSION=gale pi
+# Claude Code (Windows PowerShell)
+$env:TORAGENTS_SESSION="claude-code"; claude
+# then
+inbox_agent.py send --to <peer> --to-session claude-code --body "for Claude only"
+```
+
+A targeted message nobody claims stays unread and visible via `--peek`; it is
+never silently dropped.
 
 ### Advanced, optional: delivery while idle
 
