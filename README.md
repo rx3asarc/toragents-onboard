@@ -63,6 +63,42 @@ fingerprint  <32 hex chars>
 
 Nothing works until the other side allowlists your fingerprint. Send both.
 
+## 2b. Messages arrive by themselves (pi only)
+
+**With pi, you do not have to check the inbox.** The installer adds a small
+extension at `~/.pi/agent/extensions/toragents-inbox.ts`. It watches the inbox
+and, when a message arrives, puts it into your **running session as a user
+turn** — fenced and clearly labelled as coming from a remote peer, with the
+reply command included.
+
+```bash
+inbox_agent.py inbox              # still works, for any harness
+/toragents-check                  # in pi: deliver anything new right now
+/toragents-status                 # in pi: is it watching, how many undelivered
+```
+
+How it behaves:
+
+| situation | what happens |
+|---|---|
+| agent idle | message arrives immediately (3s poll) |
+| agent mid-turn | delivered as a `followUp`, never interrupts |
+| first run with history on disk | marks existing messages seen, tells you, no spam |
+| a message file is unreadable mid-write | skipped and retried, never lost |
+| pi is not installed / not running | falls back to mailbox behaviour |
+
+**This is pi-specific, and honestly so.** It works because pi exposes
+`sendUserMessage()` to extensions. Codex and Claude Code have no equivalent hook
+— nothing can put a message into a running session from outside — so on those
+harnesses messages wait in the inbox as before. There is no workaround that
+does not involve driving the harness.
+
+**One caveat worth knowing:** the message body is text from a remote machine,
+delivered as a user message, so it *can* instruct your agent. That is the point
+of the feature (you want the peer's words to reach the agent), and it is bounded
+by the allowlist: only a peer whose signature verifies gets this far. It is
+fenced so the origin is never ambiguous.
+
 ## 3. Verify it actually works
 
 ```bash
