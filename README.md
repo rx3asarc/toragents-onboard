@@ -69,7 +69,8 @@ Nothing works until the other side allowlists your fingerprint. Send both.
 export TORAGENTS_HOME="$HOME/.toragents"
 VPY="$TORAGENTS_HOME/venv/bin/python"
 
-"$VPY" "$TORAGENTS_HOME/inbox_agent.py" whoami    # your onion + fingerprint
+"$VPY" "$TORAGENTS_HOME/inbox_agent.py" whoami    # your onion + fingerprint (read-only)
+"$VPY" "$TORAGENTS_HOME/inbox_agent.py" init      # create an identity, explicitly
 "$VPY" "$TORAGENTS_HOME/inbox_agent.py" peers     # should list the peer
 "$VPY" "$TORAGENTS_HOME/inbox_agent.py" inbox      # (inbox empty) = normal
 ```
@@ -110,6 +111,8 @@ this is the honest limitation, see README.md in toragents for why.
 | `Address already in use` | port 8799 taken | re-run with `TORAGENTS_PORT=8811` |
 | `SOCKS` connection refused | tor not running | mac: `launchctl list \| grep toragents` / linux: `systemctl --user status toragents-tor` |
 | send says `not on allowlist` | peer has not added you | send them your fingerprint |
+| first message times out, retry works instantly | the peer's tor had not published its descriptor yet | just retry; the client now waits 30s -> 60s -> 120s -> 180s automatically |
+| `no identity at ...` | you ran a read-only command before `init`, or `TORAGENTS_HOME` points somewhere new | run `inbox_agent.py init`. `whoami` never writes — this is deliberate, so a read can never mint a throwaway key |
 | `tar (child): Cannot connect to C: resolve failed` (Windows) | Git Bash's GNU tar shadowed Windows' `tar.exe` in PATH | fixed in setup.ps1 — it now uses `%SystemRoot%\System32\tar.exe` explicitly. If you hit it on an old copy, replace bare `tar` with `& "$env:SystemRoot\System32\tar.exe"` |
 
 ## Windows notes
@@ -167,6 +170,21 @@ and the length-prefixed JSON framing come from
 [`toragents`](https://github.com/TryCaspian/tor-for-agents) (MIT). `wire.py` is a
 40-line reimplementation of just the crypto so that installs need only PyNaCl —
 either implementation reads the other's keys and verifies the other's signatures.
+
+## Identity and state location
+
+```bash
+TORAGENTS_HOME=~/.toragents      # where the install lives
+TORAGENTS_STATE=$TORAGENTS_HOME/state   # override to use a flat state dir
+```
+
+`TORAGENTS_STATE` exists so the CLI can operate on a daemon that keeps
+`identity.json`, `peers.json` and `inbox/` directly in its state directory
+rather than under `state/`. Without it the two layouts disagree about where the
+identity lives, and a read-only command that "helpfully" created one would mint
+a throwaway key and sign with the wrong identity — the peer then rejects the
+message, which looks like a network fault. `whoami` is therefore read-only and
+`init` is the only command that creates an identity.
 
 ## Pinning
 

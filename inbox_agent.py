@@ -34,7 +34,11 @@ import uuid
 from wire import AgentKeys, PublicIdentity
 
 HOME = os.environ.get("TORAGENTS_HOME", os.path.expanduser("~/.toragents"))
-STATE = os.path.join(HOME, "state")
+# TORAGENTS_STATE wins over $HOME/state so this CLI can operate on a flat state
+# directory (the layout listener.py uses on the box). Without it the two tools
+# disagree about where identity.json lives, and whoami silently mints a
+# throwaway key and signs with the wrong one.
+STATE = os.environ.get("TORAGENTS_STATE") or os.path.join(HOME, "state")
 INBOX = os.path.join(STATE, "inbox")
 ARCHIVE = os.path.join(STATE, "archive")
 PEERS = os.path.join(STATE, "peers.json")
@@ -75,15 +79,35 @@ def dirs():
         os.makedirs(d, exist_ok=True)
 
 
-def keys():
+def keys(create=False):
+    """Load the identity. Returns None if absent and create is False.
+
+    Minting is opt-in on purpose. A read-only command that creates an identity
+    is a footgun: it writes a new key, and anything that then signs with it is
+    silently using the wrong identity, which the peer rejects in a way that
+    looks like a network fault.
+    """
     dirs()
     if os.path.exists(IDFILE):
         with open(IDFILE) as f:
             return AgentKeys.from_secret_dict(json.load(f))
+    if not create:
+        return None
     k = AgentKeys.generate()
     fd = os.open(IDFILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(k.to_secret_dict(), f)
+    return k
+
+
+def need_keys():
+    k = keys()
+    if k is None:
+        print(f"no identity at {IDFILE}", file=sys.stderr)
+        print("  create one with:  inbox_agent.py init", file=sys.stderr)
+        print("  (the installer does this for you; whoami never writes)",
+              file=sys.stderr)
+        raise SystemExit(2)
     return k
 
 
@@ -172,7 +196,7 @@ class Nonces:
 # ---------------------------------------------------------------- server --
 class Inbox:
     def __init__(self):
-        self.k = keys()
+        self.k = keys(create=True)   # a daemon coming up is allowed to mint
         self.nonces = Nonces()
         self.peers = peers()
         self.lock = threading.Lock()
@@ -292,15 +316,27 @@ def serve():
 
 
 # ---------------------------------------------------------------- client --
-def dial(target_onion, timeout=120):
+# Escalating ladder: fetching a COLD descriptor (a peer whose tor has only just
+# published, i.e. every brand-new user's first message) routinely takes longer
+# than a single short timeout. A flat 4x30s budget produced a spurious
+# ConnectionError on first contact, then succeeded instantly on retry.
+DIAL_LADDER = [int(x) for x in
+               os.environ.get("TORAGENTS_DIAL_LADDER", "30,60,120,180").split(",")]
+
+
+def dial(target_onion, timeout=None):
     """Plain SOCKS5 dial through the local tor. No tor API, just socks."""
     import socks
     host = target_onion[:-6] if target_onion.endswith(".onion") else target_onion
     last = None
-    for attempt in range(4):
+    for i, budget in enumerate(DIAL_LADDER):
         s = socks.socksocket()
         s.set_proxy(socks.SOCKS5, "127.0.0.1", SOCKS_PORT, rdns=True)
-        s.settimeout(max(timeout / 4, 20))
+        s.settimeout(budget)
+        if i:
+            print(f"  retry {i}/{len(DIAL_LADDER) - 1} "
+                  f"(waiting up to {budget}s for the descriptor)",
+                  file=sys.stderr)
         try:
             s.connect((host + ".onion", 80))
             return s
@@ -310,12 +346,15 @@ def dial(target_onion, timeout=120):
                 s.close()
             except Exception:
                 pass
-            time.sleep(2)
-    raise ConnectionError(f"cannot reach {target_onion[:16]}...: {last}")
+    raise ConnectionError(
+        f"cannot reach {target_onion[:16]}... after {len(DIAL_LADDER)} attempts: {last}\n"
+        f"  A peer that has only just come online can take a couple of minutes\n"
+        f"  to publish its descriptor. Retry in a minute before assuming it is down.\n"
+        f"  Check the peer is running and tor is up on 127.0.0.1:{SOCKS_PORT}.")
 
 
 def send_to(target_onion, body, k=None):
-    k = k or keys()
+    k = k or need_keys()             # never sign with a freshly minted key
     sock = dial(target_onion)
     try:
         send_msg(sock, {"op": "hello"})
@@ -339,9 +378,21 @@ def cmd_serve(a):
     serve()
 
 
+def cmd_init(a):
+    existed = os.path.exists(IDFILE)
+    k = keys(create=True)
+    print(f"{'existing' if existed else 'created'}  {IDFILE}")
+    print(f"fingerprint  {k.public().fingerprint}")
+    if existed:
+        print("onion        unchanged (identity reused)")
+
+
 def cmd_whoami(a):
-    k = keys()
+    k = keys()                      # never creates
     print(f"onion        {onion() or '(not configured)'}")
+    if k is None:
+        print(f"fingerprint  (no identity yet - run: inbox_agent.py init)")
+        raise SystemExit(2)
     print(f"fingerprint  {k.public().fingerprint}")
 
 
@@ -432,6 +483,7 @@ def main():
     s = ap.add_subparsers(dest="cmd", required=True)
     s.add_parser("serve").set_defaults(fn=cmd_serve)
     s.add_parser("whoami").set_defaults(fn=cmd_whoami)
+    s.add_parser("init").set_defaults(fn=cmd_init)
     s.add_parser("peers").set_defaults(fn=cmd_peers)
     p = s.add_parser("add-peer")
     p.add_argument("fingerprint")
