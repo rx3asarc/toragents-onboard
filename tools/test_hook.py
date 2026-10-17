@@ -95,6 +95,51 @@ check("unknown event: silent, unmarked",
       run(d3, {"hook_event_name": "PreToolUse"})[1] == "" and ann(d3) is None)
 check("garbage stdin: exit 0, unmarked",
       run(d3, {})[0] == 0 and ann(d3) is None)
+# ---- the reply line is a control surface, not prose ------------------------
+# An agent copies this line instead of composing one. It once read
+#   reply: ... send --to box \u00b7 session pi-01a14a4c --body "..."
+# which is not a valid --to value and carried no --to-session, so every copy
+# answered untargeted and fanned out to every session on the peer's machine.
+# Nothing caught it because the sentence only ever reaches a model. So assert on
+# the RENDERED TEXT the model will actually read.
+d4 = tempfile.mkdtemp()
+os.makedirs(os.path.join(d4, "state", "inbox"))
+json.dump({"id": "rl1", "body": "do a thing", "from_label": "maestro-pc",
+           "from_session": "claude-9e83f4aa", "received": 1},
+          open(os.path.join(d4, "state", "inbox", "1-rl1.json"), "w"))
+def context_text(out: str) -> str:
+    """The prose the MODEL reads, with JSON escaping undone.
+
+    Checking the raw stdout is wrong: json.dumps escapes non-ASCII, so a literal
+    '\u00b7' in the rendered text appears as backslash-u-0-0-b-7 and a naive
+    substring test sails past the very defect it was written to catch. Decode
+    first, then assert.
+    """
+    try:
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    except Exception:
+        return out
+
+_, line_out, _ = run(d4, {"hook_event_name": "SessionStart", "session_id": "aaaa1111"})
+text = context_text(line_out)
+reply = next((l for l in text.splitlines() if "reply:" in l), "")
+check("reply line names the sender's session", "--to-session claude-9e83f4aa" in reply, reply)
+check("reply line --to is the bare label, not 'label · session x'",
+      # the header legitimately says "maestro-pc · session x"; only the REPLY
+      # line is executed, so only it must be a clean --to value
+      "--to maestro-pc --to-session" in reply and "·" not in reply, reply)
+check("reply line warns that --to-session is load-bearing",
+      "reaches every session" in text, reply)
+
+# and when the peer named no session, say so instead of implying it is handled
+d5 = tempfile.mkdtemp()
+os.makedirs(os.path.join(d5, "state", "inbox"))
+json.dump({"id": "rl2", "body": "anon", "from_label": "maestro-pc", "received": 2},
+          open(os.path.join(d5, "state", "inbox", "1-rl2.json"), "w"))
+_, anon_out, _ = run(d5, {"hook_event_name": "SessionStart", "session_id": "bbbb2222"})
+check("unnamed peer: reply line admits it cannot be targeted",
+      "cannot be targeted" in context_text(anon_out), anon_out[-200:])
+
 check("--peek never marks", run(d3, {}, "--peek")[1] != "" and ann(d3) is None)
 
 print(f"\n  {PASS} passed, {FAIL} failed")
