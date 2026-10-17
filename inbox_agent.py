@@ -41,8 +41,28 @@ PEERS = os.path.join(STATE, "peers.json")
 IDFILE = os.path.join(STATE, "identity.json")
 HOSTNAME_FILE = os.path.join(HOME, "hs", "hostname")
 
-LISTEN_PORT = int(os.environ.get("TORAGENTS_PORT", 8799))
-SOCKS_PORT = int(os.environ.get("TORAGENTS_SOCKS", 9050))
+CONFIG = os.path.join(STATE, "config.json")
+
+
+def _installed_config():
+    """Read the ports the installer actually configured.
+
+    This exists because the CLI and the daemon must agree on the SOCKS port and
+    the daemon is the only one that gets TORAGENTS_SOCKS from its service unit.
+    The old fallback was 9050 while the installer writes 9061, so every bare
+    `send`/`inbox` died with "Connection refused" until the user exported the
+    variable by hand. Env still wins; the recorded config is the fallback.
+    """
+    try:
+        with open(CONFIG) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+_cfg = _installed_config()
+LISTEN_PORT = int(os.environ.get("TORAGENTS_PORT") or _cfg.get("local_port") or 8799)
+SOCKS_PORT = int(os.environ.get("TORAGENTS_SOCKS") or _cfg.get("socks_port") or 9050)
 NONCE_TTL = 180.0
 
 b64e = lambda b: base64.b64encode(b).decode("ascii")
