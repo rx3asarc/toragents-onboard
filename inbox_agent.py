@@ -112,13 +112,23 @@ def need_keys():
 
 
 def peers():
+    """Return the allowlist map, or None if the file exists but is unreadable.
+
+    The distinction is load-bearing. Returning {} for both "no peers configured"
+    and "could not read peers.json" means a transient failure (permissions, fd
+    limit, a half-synced or corrupt file) silently produces an EMPTY allowlist,
+    and every peer is then rejected with no error anywhere — the log just says
+    "0 allowed", which reads like a legitimate result. Absent file -> {}.
+    Unreadable file -> None, and callers must keep what they already have.
+    """
     if not os.path.exists(PEERS):
         return {}
     try:
         with open(PEERS) as f:
-            return json.load(f)
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
     except Exception:
-        return {}
+        return None
 
 
 def save_peers(p):
@@ -215,7 +225,9 @@ class Inbox:
     def __init__(self):
         self.k = keys(create=True)   # a daemon coming up is allowed to mint
         self.nonces = Nonces()
-        self.peers = peers()
+        loaded = peers()
+        self.peers = loaded if loaded is not None else {}
+        self._peers_warned = None
         self.lock = threading.Lock()
         self.accepted = self.rejected = 0
         self.addr = onion()
@@ -228,13 +240,30 @@ class Inbox:
             return None
 
     def _reload_peers_if_changed(self):
-        """Pick up `add-peer` without restarting the daemon."""
+        """Pick up `add-peer` without restarting the daemon.
+
+        On an unreadable file this KEEPS the peers already loaded and does not
+        advance the stamp, so the read is retried on the next message instead of
+        pinning an empty allowlist until the file next changes.
+        """
         now = self._mtime()
-        if now != self._peers_mtime:
-            with self.lock:
-                self.peers = peers()
-                self._peers_mtime = now
-            print(f"[inbox] peer list reloaded ({len(self.peers)} allowed)", flush=True)
+        if now == self._peers_mtime:
+            return
+        loaded = peers()
+        if loaded is None:
+            if now != self._peers_warned:
+                print(f"[inbox] peers.json unreadable; keeping "
+                      f"{len(self.peers)} allowed peer(s), will retry", flush=True)
+                self._peers_warned = now
+            return
+        # No lock here on purpose: the caller already holds self.lock and
+        # threading.Lock is not reentrant. Assigning the dict reference is
+        # atomic, and a reader that grabbed the old dict iterates a stable
+        # snapshot, so a swap mid-read is safe.
+        self.peers = loaded
+        self._peers_mtime = now
+        self._peers_warned = None
+        print(f"[inbox] peer list reloaded ({len(self.peers)} allowed)", flush=True)
 
     def handle(self, req):
         op = req.get("op")
