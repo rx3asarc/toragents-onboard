@@ -93,6 +93,7 @@ def _auto_session(payload=None) -> str:
 
 
 MY_SESSION = _auto_session()
+RECENT_ARRIVAL_S = 15 * 60     # how long "last delivered" stays on the status line
 SUPPORTED_EVENTS = ("SessionStart", "UserPromptSubmit", "SubagentStart",
                     "Stop", "SubagentStop")
 
@@ -417,6 +418,29 @@ def statusline() -> str:
     return " \u00b7 ".join(p for p in parts if p)
 
 
+def note_delivery(senders: list) -> None:
+    """Remember that mail actually arrived, for the human's status line.
+
+    The badge counts what is UNREAD, and the hook marks a message read the moment
+    it hands it to the model -- which happens at SessionStart, before the status
+    line is ever drawn. So on a working install the person almost never sees
+    "1 new"; they see "0 unread" a second later and cannot tell that anything
+    happened at all. Measured on a real box: the human saw "0 unread" while a
+    message they had just been told about was already in the transcript.
+
+    So record the arrival. Best effort, never fails a delivery.
+    """
+    if not senders:
+        return
+    try:
+        tmp = os.path.join(STATE, "last_delivery.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"label": senders[0][:24], "ts": time.time()}, f)
+        os.replace(tmp, os.path.join(STATE, "last_delivery.json"))
+    except OSError:
+        pass
+
+
 def badge() -> str:
     """One short line for a persistent UI element (Claude Code's statusLine).
 
@@ -447,9 +471,20 @@ def badge() -> str:
             continue
         if d.get("id") not in announced:
             fresh += 1
-    if not fresh:
-        return "\U0001F4EC tor: 0 unread"
-    return f"\U0001F4E8 tor: {fresh} new"
+    if fresh:
+        return f"\U0001F4E8 tor: {fresh} new"
+    # Nothing waiting: say when something last did arrive, for a little while.
+    # This is the difference between "quiet" and "quiet because it already came".
+    try:
+        with open(os.path.join(STATE, "last_delivery.json"), encoding="utf-8") as f:
+            note = json.load(f)
+        age = time.time() - float(note.get("ts") or 0)
+        if 0 <= age < RECENT_ARRIVAL_S:
+            when = time.strftime("%H:%M", time.localtime(float(note["ts"])))
+            return f"\U0001F4EC tor: 0 unread \u00b7 last {when} {note.get('label', '')}".strip()
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return "\U0001F4EC tor: 0 unread"
 
 
 def remember_session() -> None:
@@ -578,6 +613,9 @@ def main() -> int:
     # Mark BEFORE emitting, because the Stop decision depends on whether the memo
     # can hold the mark at all. If the flush then fails we roll the mark back --
     # a message nobody received must not be recorded as delivered.
+    senders = [l[len("--- BEGIN PEER MESSAGE from "):].split(" (")[0].split(" id=")[0]
+               .split(" \u00b7 session")[0].strip()
+               for l in text.splitlines() if l.startswith("--- BEGIN PEER MESSAGE from ")]
     marked = write_announced(wanted)
     if event in ("Stop", "SubagentStop") and not marked:
         return 0  # never loop a continuation on a memo that will not stick
@@ -592,6 +630,9 @@ def main() -> int:
             except OSError:
                 pass
         return 0
+    # Delivered. Leave a trace, so the human's status line can still say that
+    # something arrived after the message itself has been read.
+    note_delivery(senders)
 
     return 0
 

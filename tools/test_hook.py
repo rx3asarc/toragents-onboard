@@ -222,6 +222,25 @@ check("status line: survives a failing original", rc == 0 and "new" in out, out)
 rc, out = run_arg(mkstate(1), "--statusline")
 check("status line: works with no saved original", rc == 0 and "new" in out, out)
 
+# ---- "0 unread" must not mean "nothing ever happened" ------------------------
+# The hook marks a message read when it hands it over, which happens before the
+# status line is drawn. A human then sees "0 unread" seconds after being told a
+# message arrived, which looks exactly like a quiet machine.
+d11 = mkstate(1)
+e11 = dict(os.environ, TORAGENTS_HOME=d11); e11.pop("TORAGENTS_STATE", None)
+subprocess.run([PY, HOOK], input=b'{"hook_event_name":"SessionStart","session_id":"dddd4444"}',
+               capture_output=True, env=e11)
+rc, out = run_arg(d11, "--badge")
+check("badge: after delivery it remembers the arrival", "last" in out and "maestro-pc" in out, out)
+check("badge: delivered mail is no longer counted as new", "0 unread" in out, out)
+
+# and it forgets, rather than claiming a delivery from an hour ago
+import time as _t
+with open(os.path.join(d11, "state", "last_delivery.json"), "w") as f:
+    json.dump({"label": "maestro-pc", "ts": _t.time() - 3600}, f)
+rc, out = run_arg(d11, "--badge")
+check("badge: stale arrival note is dropped", "last" not in out, out)
+
 check("--peek never marks", run(d3, {}, "--peek")[1] != "" and ann(d3) is None)
 
 print(f"\n  {PASS} passed, {FAIL} failed")
