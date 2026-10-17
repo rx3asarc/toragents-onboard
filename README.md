@@ -114,6 +114,9 @@ bounce forever, and it only fires when there is something to say.
 | two harnesses on one machine | the message goes to whichever asks first, once |
 | first run with history on disk | existing messages marked seen, no burst of turns |
 | a message file unreadable mid-write | skipped and retried, never lost |
+| more messages than fit in one delivery | delivered in slices; only what was shown is marked |
+| stdout closed by a timed-out harness | mark rolled back, so it arrives next time |
+| the delivered-memo gets corrupted | quarantined and rebuilt, not replayed forever |
 | no harness found | installer says so; mailbox behaviour, nothing breaks |
 
 ### Two things that will otherwise look like "it's broken"
@@ -127,7 +130,15 @@ and backs it up as `settings.json.toragents-backup`. If it cannot *parse* the
 file it refuses and tells you, because a merge that started from `{}` would
 delete somebody else's hooks.
 
-**The honest caveat:** the message body is text from a remote machine, handed to
+### The one thing that is not solved
+
+A harness that *reads* our output and then discards it anyway leaves no signal
+we can observe from inside the hook — the write succeeds, so we record delivery
+and cannot tell that nobody saw it. Where we can detect failure (a closed pipe)
+the mark is rolled back; where we cannot, this is the known limit. It is stated
+here rather than papered over.
+
+**The other honest caveat:** the message body is text from a remote machine, handed to
 your agent as context. It *can* instruct the agent — that is the point, you want
 the peer's words to land — and it is bounded by the allowlist, since only a peer
 whose signature verifies reaches this code. It is fenced so its origin is never
