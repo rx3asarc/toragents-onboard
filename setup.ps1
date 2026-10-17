@@ -231,6 +231,27 @@ if ($startup -and (Test-Path $startup)) {
 }
 
 if (-not $DryRun) {
+  # Re-running must replace the running instance, not stack a second one beside
+  # it: two tors on 9061 and two daemons on 8799 would each fail to bind, and
+  # their 5s restart loops would then fight each other forever.
+  # The loops are cmd.exe, so they go first -- killing tor alone just makes the
+  # loop relaunch it. Everything is matched on OUR paths, never by bare name,
+  # so a Tor Browser's tor.exe is never touched.
+  $stopped = 0
+  Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*run-tor.cmd*" -or $_.CommandLine -like "*run-inbox.cmd*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $stopped++ }
+  Get-CimInstance Win32_Process -Filter "Name='tor.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -and $_.ExecutablePath -like "*$HomeDir*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $stopped++ }
+  Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*inbox_agent.py*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $stopped++ }
+  if ($stopped -gt 0) {
+    Ok "stopped $stopped old process(es)"
+    Start-Sleep -Milliseconds 800
+  }
+
   # launch now, hidden, exactly as autostart will
   & wscript.exe $vbsPath
   Ok "started (hidden)"
