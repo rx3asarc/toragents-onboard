@@ -59,7 +59,39 @@ FLAT_STATE = os.environ.get("TORAGENTS_DEFAULT_STATE") or "/var/lib/toragents-in
 MAX_BODY = 4000
 MAX_TOTAL = 4500  # Codex truncates additionalContext at 5000 by default
 # Name of THIS session, if the user gave it one. Used for addressing only.
-MY_SESSION = (os.environ.get("TORAGENTS_SESSION") or "").strip()
+def _auto_session(payload=None) -> str:
+    """Name this session from what the harness already knows, so that nobody has
+    to set an env var before launching anything.
+
+    The hook payload carries session_id (stable for the conversation, kept by
+    --resume), and the process environment says which harness we are under. The
+    first 8 characters are enough to tell two sessions apart and short enough to
+    type when addressing a reply.
+    """
+    explicit = (os.environ.get("TORAGENTS_SESSION") or "").strip()
+    if explicit:
+        return explicit[:64]
+    prefix = "session"
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT") or os.environ.get("CLAUDE_CONFIG_DIR"):
+        prefix = "claude"
+    elif os.environ.get("PI_SESSION_ID"):
+        prefix = "pi"
+    elif os.environ.get("CODEX_HOME") or os.environ.get("CODEX_THREAD_ID"):
+        prefix = "codex"
+    sid = ""
+    if isinstance(payload, dict):
+        sid = (payload.get("session_id") or payload.get("thread_id") or "").strip()
+    if not sid:
+        for var in ("CLAUDE_CODE_SESSION_ID", "PI_SESSION_ID", "CODEX_THREAD_ID"):
+            sid = (os.environ.get(var) or "").strip()
+            if sid:
+                break
+    if not sid:
+        return ""
+    return f"{prefix}-{sid.replace('-', '')[:8]}"
+
+
+MY_SESSION = _auto_session()
 SUPPORTED_EVENTS = ("SessionStart", "UserPromptSubmit", "SubagentStart",
                     "Stop", "SubagentStop")
 
@@ -232,12 +264,16 @@ def render_one(m: dict) -> str:
     trunc = "\n…(truncated)" if len(m.get("body") or "") > MAX_BODY else ""
     note = age_note(m)
     to = f"\nto: {m['to_session']}" if m.get("to_session") else ""
+    # Say who WE are, so the agent knows how it would be addressed. Without this
+    # line a targeted reply needs a name the agent has no way of knowing.
+    me = f"you are {MY_SESSION}" if MY_SESSION else "this session has no name"
     return "\n".join([
         f"--- BEGIN PEER MESSAGE from {who}" + (f" ({fp}…)" if fp else "") + f" id={m['id']}" + to,
+        f"({me})",
         *([note] if note else []),
         body + trunc,
         "--- END PEER MESSAGE",
-        f'reply: inbox_agent.py send --to {who} --body "…"',
+        f'reply: inbox_agent.py send --to {who} --body "…"   (your session name is added automatically)',
     ])
 
 
@@ -298,10 +334,12 @@ def emit(text: str, event: str | None, manual: bool) -> bool:
 
 
 def main() -> int:
+    global MY_SESSION
     setup_stdout()
     event = None
     stop_hook_active = False
     raw = ""
+    payload = None
     try:
         if not sys.stdin.isatty():
             raw = sys.stdin.read()
@@ -311,6 +349,9 @@ def main() -> int:
             stop_hook_active = bool(payload.get("stop_hook_active")) if isinstance(payload, dict) else False
     except (ValueError, OSError):
         pass
+    # The payload is the only place the harness says WHICH session we are, so the
+    # name has to be derived here rather than at import time.
+    MY_SESSION = _auto_session(payload if isinstance(payload, dict) else None)
 
     if "--event" in sys.argv:
         event = sys.argv[sys.argv.index("--event") + 1]

@@ -447,6 +447,31 @@ def dial(target_onion, timeout=None):
         f"  Check the peer is running and tor is up on 127.0.0.1:{SOCKS_PORT}.")
 
 
+def auto_session() -> str:
+    """Who is speaking, without asking anyone to configure anything.
+
+    Every harness already tells its children which session they belong to:
+    Claude Code exports CLAUDE_CODE_SESSION_ID, pi exports PI_SESSION_ID, and a
+    hook payload carries session_id. Those are stable per conversation and
+    survive --resume, so a short prefix of the id is a name that identifies the
+    session to the other machine for its whole life -- no setup, no env var, and
+    two sessions on one box stop looking like one.
+    """
+    explicit = (os.environ.get("TORAGENTS_SESSION") or "").strip()
+    if explicit:
+        return explicit[:64]
+    for var, prefix in (
+        ("CLAUDE_CODE_SESSION_ID", "claude"),
+        ("PI_SESSION_ID", "pi"),
+        ("CODEX_SESSION_ID", "codex"),
+        ("CODEX_THREAD_ID", "codex"),
+    ):
+        v = (os.environ.get(var) or "").strip()
+        if v:
+            return f"{prefix}-{v.replace('-', '')[:8]}"
+    return ""
+
+
 def send_to(target_onion, body, k=None, session=None, to_session=None):
     k = k or need_keys()             # never sign with a freshly minted key
     sock = dial(target_onion)
@@ -596,7 +621,7 @@ def cmd_send(a):
     if target is None:
         sys.exit(f"unknown peer {a.to!r}; try: inbox_agent.py peers")
     reply = send_to(target["onion"], a.body,
-                    session=getattr(a, "session", "") or None,
+                    session=getattr(a, "session", None) or auto_session() or None,
                     to_session=getattr(a, "to_session", "") or None)
     print(json.dumps(reply, indent=2))
     sys.exit(0 if reply and reply.get("ok") else 1)
@@ -627,8 +652,8 @@ def main():
     p = s.add_parser("send")
     p.add_argument("--to", required=True)
     p.add_argument("--body", required=True)
-    p.add_argument("--session", default=os.environ.get("TORAGENTS_SESSION", ""),
-                   help="name of THIS session, stamped on the message")
+    p.add_argument("--session", default=None,
+                   help="name of THIS session; auto-derived from the harness if omitted")
     p.add_argument("--to-session", default="", help="only deliver to this session name")
     p.set_defaults(fn=cmd_send)
     a = ap.parse_args()

@@ -199,8 +199,12 @@ def verify_claude(settings_path: str, claude_bin: str) -> tuple[bool | None, str
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--python", default=sys.executable, help="interpreter that runs the hook")
-    ap.add_argument("--script", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                     "toragents_hook.py"))
+    # The hook lives beside this file in a checkout (tools/../toragents_hook.py)
+    # and beside the installed copy at runtime; look in both before giving up.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _cand = [os.path.join(_here, "toragents_hook.py"),
+             os.path.join(os.path.dirname(_here), "toragents_hook.py")]
+    ap.add_argument("--script", default=next((c for c in _cand if os.path.exists(c)), _cand[0]))
     ap.add_argument("--home", default=os.path.expanduser("~"))
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--uninstall", action="store_true")
@@ -259,6 +263,19 @@ def main() -> int:
             log("Claude Code: hooks written; could not verify (no claude on PATH).")
             log("Claude Code: open a session and look for the messages -- if they do not")
             log("Claude Code: appear, run: claude --init-only --debug and check the log.")
+
+    # Tell the agent where it is. The brief may be read on macOS, Linux or
+    # Windows, under any of three harnesses; being explicit means the agent can
+    # report its situation instead of guessing, and a human reading the output
+    # knows what got wired.
+    import platform as _pf
+    log("")
+    log(f"system:   {_pf.system()} {_pf.release()} / {_pf.machine()}")
+    wired = ", ".join(n for n, f in (("claude", "claude" in found), ("codex", "codex" in found),
+                                     ("pi (extension)", os.path.isdir(pi) or bool(shutil.which("pi")))) if f)
+    log(f"harnesses: {wired or 'none detected'}")
+    log("sessions:  name themselves from the harness id (claude-xxxxxxxx, pi-xxxxxxxx);")
+    log("           there is nothing to configure and nothing to remember.")
 
     if not found:
         log("no Claude Code or Codex config found on this machine.")

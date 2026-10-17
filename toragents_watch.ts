@@ -99,7 +99,27 @@ const INBOX = join(STATE, "inbox");
 const ANNOUNCED = join(STATE, "announced.json");
 const POLL_MS = Number(process.env.TORAGENTS_POLL_MS || 3000);
 /** This session's name, for addressing only (TORAGENTS_SESSION). */
-const MY_SESSION = (process.env.TORAGENTS_SESSION || "").trim();
+function autoSession(): string {
+	const explicit = (process.env.TORAGENTS_SESSION || "").trim();
+	if (explicit) return explicit.slice(0, 64);
+	const pairs: Array<[string, string]> = [
+		["CLAUDE_CODE_SESSION_ID", "claude"],
+		["PI_SESSION_ID", "pi"],
+		["CODEX_SESSION_ID", "codex"],
+		["CODEX_THREAD_ID", "codex"],
+	];
+	for (const [key, prefix] of pairs) {
+		const id = (process.env[key] || "").trim();
+		if (id) return `${prefix}-${id.replace(/-/g, "").slice(0, 8)}`;
+	}
+	return "";
+}
+
+/**
+ * Which session we are, derived from what the harness already tells its
+ * children. Nobody types a name; two sessions on one machine still differ.
+ */
+const MY_SESSION = autoSession();
 const MAX_BODY = 4000;
 const MAX_BATCH = 5;
 
