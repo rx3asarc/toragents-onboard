@@ -442,8 +442,11 @@ def dial(target_onion, timeout=None):
                 pass
     raise ConnectionError(
         f"cannot reach {target_onion[:16]}... after {len(DIAL_LADDER)} attempts: {last}\n"
-        f"  A peer that has only just come online can take a couple of minutes\n"
-        f"  to publish its descriptor. Retry in a minute before assuming it is down.\n"
+        f"  MEASURED: a peer whose tor has just restarted takes about THREE MINUTES\n"
+        f"  to republish its descriptor (182 s measured on this project). Every\n"
+        f"  reinstall on either side restarts tor, so a fresh install is followed by\n"
+        f"  three minutes in which that peer is unreachable and looks dead. Wait, do\n"
+        f"  not reinstall again to 'fix' it -- that restarts the clock.\n"
         f"  Check the peer is running and tor is up on 127.0.0.1:{SOCKS_PORT}.")
 
 

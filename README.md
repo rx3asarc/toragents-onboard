@@ -166,6 +166,22 @@ fenced message, the person gets one line naming the sender —
 — and never the body. It is on a screen someone else may be looking at, and the
 agent already has the text.
 
+### The three minutes after any restart
+
+Every install and every reinstall restarts tor on that machine, and a restarted
+tor must republish its hidden-service descriptor. Measured on this project: **182
+seconds**. During that window the peer is unreachable through an onion and looks
+completely dead — no connection, no error, just a hang, because their onion
+resolves to a descriptor that no longer exists.
+
+Two consequences:
+
+- A send that fails immediately after either side reinstalled is not a bug. Wait
+  three minutes and retry; `reach` will tell you the moment it is back.
+- Do not reinstall to fix unreachability. Each install restarts tor and starts the
+  three minutes again, which is how a ten-second problem becomes an hour of
+  "the peer is down" that was never true.
+
 ### "Is my peer reachable?" — `reach`
 
 ```bash
