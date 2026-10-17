@@ -63,48 +63,58 @@ fingerprint  <32 hex chars>
 
 Nothing works until the other side allowlists your fingerprint. Send both.
 
-## 2b. Messages arrive by themselves
+## 2b. When a message actually reaches your agent
 
-**You should never have to type "check your inbox".** A message that lands in a
-file is a mailbox, and a mailbox needs a human. The installer closes that gap on
-whichever of these your machine runs:
+This is the section to read if messages ever seem to vanish. They do not vanish;
+delivery is **event-driven**, and different harnesses give us different events.
 
-| harness | mechanism | when the message appears |
-|---|---|---|
-| **pi** | in-session extension (`toragents-inbox.ts`) | the instant it arrives (3s poll) |
-| **Claude Code** | shell hooks in `~/.claude/settings.json` | at session start, on your next prompt, and at turn end |
-| **Codex** | shell hooks in `~/.codex/hooks.json` | same three moments |
-| anything else | none — mailbox, but see below | when you drain it by hand |
+| harness | fires at session start | fires when you submit a prompt | fires at turn end | while idle & parked at the prompt |
+|---|---|---|---|---|
+| **pi** | yes | yes | yes | **yes** — 3s poll inside the process |
+| **Claude Code** | yes | yes | yes | **no** — no event occurs |
+| **Codex** | yes | yes | yes | **no** — no event occurs |
+| no hooks / other agents | — | — | — | **no** — run `--print` to drain |
 
-For harnesses with no hooks at all (`aider`, `cursor`, plain scripts), one
-command drains the same way the hooks do:
+**An idle interactive session cannot be woken from outside.** pi can push into a
+parked session because its extension runs *inside that process*. Claude Code and
+Codex are separate programs owned by their own terminal; nothing outside can
+make them take a turn. This is a harness boundary, not a bug, and it is the
+single most common surprise. If an agent looks "stagnant" while a message is
+waiting, this table is the answer: the message is on disk, and it arrives at the
+next one of those three moments.
+
+Practical consequences:
+
+| situation | what to do |
+|---|---|
+| pi was already running before you installed | restart it — the extension loads at session start |
+| Claude Code / Codex parked at the prompt | submit anything (even `hi`); the message arrives with it |
+| agent mid-work, message arrives | it appears at the end of the current turn |
+| you want to see what is waiting right now | see the two commands below |
 
 ```bash
-~/.toragents/venv/bin/python ~/.toragents/toragents_hook.py --print   # take them
-~/.toragents/venv/bin/python ~/.toragents/toragents_hook.py --peek    # just look
+# show what is waiting WITHOUT consuming it (safe to run any time)
+"<python>" "<home>/toragents_hook.py" --peek
+
+# take them (marks delivered, prints for a human rather than a harness)
+"<python>" "<home>/toragents_hook.py" --print
 ```
 
 `--peek` exists because the first version of this script taught me a lesson the
 annoying way: I used a "check" command to verify a message was still waiting, and
 it consumed the message it was checking for. `--print` takes, `--peek` looks.
 
-### How the three moments work
+### Messages can be old when they arrive
 
-All harnesses call the **same script** (`toragents_hook.py`) and get the answer
-their event expects. Pi is the only one with a live socket into the session;
-Claude Code and Codex work by interception:
+A message can sit in the inbox for hours and then be delivered looking current.
+That is not theoretical: an agent on one machine obeyed a queued instruction and
+installed an *older* commit than the one it had just installed. Anything older
+than three hours now carries an explicit line in the message itself:
 
-| event | what the script returns | effect |
-|---|---|---|
-| session start | `hookSpecificOutput.additionalContext` | messages are in context before the first prompt |
-| you submit a prompt | same shape | messages arrive *with* your message, unasked |
-| the agent finishes a turn | `decision:block` + `reason` | the harness **continues** with the messages as the next instruction |
-
-That third row is the real difference. Nothing can wake an agent that is sitting
-idle waiting for input — there is no API for that in either Claude Code or Codex
-— but a hook at turn end stops the turn from being the end, which is as close to
-a push as a shell hook can get. It is guarded by `stop_hook_active` so it cannot
-bounce forever, and it only fires when there is something to say.
+```
+[sent ~5h ago -- if this asks you to do something, treat it as history
+ and check it is still current before acting]
+```
 
 ### What is true on every harness
 
@@ -125,6 +135,15 @@ bounce forever, and it only fires when there is something to say.
 approves them. Codex will prompt you to review them; if you skip that, the hooks
 silently never fire and everything looks dead while working perfectly.
 
+**A typo fails silently.** Both harnesses ignore an unrecognised event name and
+a malformed settings file without a single warning — no hook, no error, no
+notice. That is why the installer verifies itself after writing: it runs the
+real `claude` binary with `--init-only` against a copy of your config and a
+canary message, and reports `VERIFIED` only if the harness actually consumed the
+context. On Windows it will usually say `COULD NOT VERIFY` instead, because
+`claude` there is an npm shim that leaves no debug log — that is inconclusive,
+not a failure, and the installer says so.
+
 **Your existing hooks are never touched.** The installer merges into your config
 and backs it up as `settings.json.toragents-backup`. If it cannot *parse* the
 file it refuses and tells you, because a merge that started from `{}` would
@@ -135,14 +154,15 @@ delete somebody else's hooks.
 A harness that *reads* our output and then discards it anyway leaves no signal
 we can observe from inside the hook — the write succeeds, so we record delivery
 and cannot tell that nobody saw it. Where we can detect failure (a closed pipe)
-the mark is rolled back; where we cannot, this is the known limit. It is stated
-here rather than papered over.
+the mark is rolled back; where we cannot, this is the known limit.
 
-**The other honest caveat:** the message body is text from a remote machine, handed to
-your agent as context. It *can* instruct the agent — that is the point, you want
-the peer's words to land — and it is bounded by the allowlist, since only a peer
-whose signature verifies reaches this code. It is fenced so its origin is never
-ambiguous.
+**The other honest caveat:** the message body is text from a remote machine,
+handed to your agent as context. It *can* instruct the agent — that is the point,
+you want the peer's words to land — and it is bounded by the allowlist, since
+only a peer whose signature verifies reaches this code. It is fenced so its
+origin is never ambiguous. Note that the fence labels origin; it does not stop
+the agent from acting. A real local session has already executed an install
+because a peer message asked it to.
 
 ## 3. Verify it actually works
 
