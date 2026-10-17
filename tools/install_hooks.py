@@ -23,10 +23,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
 
 MARKER = "toragents_hook.py"  # how we recognise (and later remove) our own hooks
 EVENTS = ("SessionStart", "UserPromptSubmit", "Stop")
@@ -122,17 +125,18 @@ def merge_hooks(cfg: dict, command: str, windows_command: str | None,
 
 
 def install_one(label: str, path: str, command: str, windows_command: str | None,
-                dry: bool, uninstall: bool) -> None:
+                dry: bool, uninstall: bool) -> str:
+    """Returns written | same | skipped."""
     cfg, status = load_json(path)
     if status == "unreadable" or status.startswith("corrupt"):
         log(f"{label}: SKIPPED -- {path} is {status}.")
         log(f"{label}: fix or move that file, then re-run. I will not overwrite it.")
-        return
+        return "skipped"
     cfg = cfg or {}
     changed = merge_hooks(cfg, command, windows_command, uninstall)
     if not changed:
         log(f"{label}: already up to date ({path})")
-        return
+        return "same"
     save_json(path, cfg, dry)
     verb = "removed from" if uninstall else "installed into"
     log(f"{label}: hooks {verb} {path}")
@@ -143,6 +147,48 @@ def install_one(label: str, path: str, command: str, windows_command: str | None
         # line a Codex user sees silence and concludes the watcher is broken.
         log("Codex: hooks must be TRUSTED before they run -- approve them when")
         log("Codex prompts, or nothing will be delivered and it will look broken.")
+    return "written"
+
+
+def verify_claude(settings_path: str, claude_bin: str) -> tuple[bool, str]:
+    """Ask the REAL binary whether it accepts the config we just wrote.
+
+    This exists because a malformed settings.json fails completely silently:
+    no hook runs, no warning, no error. A user sees nothing arrive and concludes
+    the whole feature is broken. A canary message plus --init-only (which starts
+    no conversation and needs no credentials) turns that into a one-second check.
+
+    It runs in a throwaway copy of the home, so the user's real config and debug
+    logs are not touched.
+    """
+    home = tempfile.mkdtemp(prefix="toragents-verify-")
+    try:
+        os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
+        shutil.copy2(settings_path, os.path.join(home, ".claude", "settings.json"))
+        state = os.path.join(home, "state")
+        os.makedirs(os.path.join(state, "inbox"))
+        with open(os.path.join(state, "inbox", "verify.json"), "w") as f:
+            json.dump({"id": "verify-canary", "body": "canary", "from_label": "verify",
+                       "received": 1}, f)
+        env = dict(os.environ, HOME=home, TORAGENTS_STATE=state)
+        env.pop("TORAGENTS_HOME", None)
+        try:
+            subprocess.run([claude_bin, "--init-only", "--debug"], cwd=home, env=env,
+                           capture_output=True, timeout=90)
+        except (OSError, subprocess.SubprocessError) as e:
+            return False, f"could not run {claude_bin}: {e}"
+        logs = sorted(glob.glob(os.path.join(home, ".claude", "debug", "*.txt")),
+                      key=os.path.getmtime)
+        if not logs:
+            return False, "claude produced no debug log"
+        txt = open(logs[-1], errors="replace").read()
+        if "parsed and validated hook JSON output" not in txt:
+            return False, "claude ran but never validated our hook output"
+        if "additionalContext" not in txt:
+            return False, "our hook ran but no context was consumed"
+        return True, "real Claude Code ran our hook and consumed its context"
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def main() -> int:
@@ -153,6 +199,8 @@ def main() -> int:
     ap.add_argument("--home", default=os.path.expanduser("~"))
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--uninstall", action="store_true")
+    ap.add_argument("--no-verify", action="store_true", help="skip the live harness check")
+    ap.add_argument("--claude-bin", default=None, help="override the claude executable")
     a = ap.parse_args()
 
     script = os.path.abspath(a.script)
@@ -175,16 +223,33 @@ def main() -> int:
     pi = os.path.join(a.home, ".pi")
     found = []
 
-    if os.path.isdir(claude):
+    # A harness can be installed before it has ever written its config dir, so
+    # "binary on PATH" counts too. Skipping here meant a fresh Claude Code
+    # install got no hooks and the user saw silence, which reads as breakage.
+    claude_bin = a.claude_bin or shutil.which("claude")
+    claude_result = "skipped"
+    if os.path.isdir(claude) or claude_bin:
         found.append("claude")
-        install_one("Claude Code", os.path.join(claude, "settings.json"),
-                    command, None, a.dry_run, a.uninstall)
-    if os.path.isdir(codex):
+        claude_result = install_one("Claude Code", os.path.join(claude, "settings.json"),
+                                    command, None, a.dry_run, a.uninstall)
+    if os.path.isdir(codex) or shutil.which("codex"):
         found.append("codex")
         install_one("Codex", os.path.join(codex, "hooks.json"),
                     command, windows_command, a.dry_run, a.uninstall)
-    if os.path.isdir(pi):
+    if os.path.isdir(pi) or shutil.which("pi"):
         log(f"pi: extension handles delivery in-session (no hook needed){' -- present' if not found else ''}")
+
+    if "claude" in found and claude_result in ("written", "same") and not a.uninstall and not a.dry_run:
+        if not a.no_verify and claude_bin:
+            ok, why = verify_claude(os.path.join(claude, "settings.json"), claude_bin)
+            log(f"Claude Code: {'VERIFIED' if ok else 'NOT VERIFIED'} -- {why}")
+            if not ok:
+                log("Claude Code: the hooks are written but the harness did not accept them.")
+                log("Claude Code: check ~/.claude/settings.json, or run with --no-verify.")
+        elif not claude_bin:
+            log("Claude Code: hooks written; could not verify (no claude on PATH).")
+            log("Claude Code: open a session and look for the messages -- if they do not")
+            log("Claude Code: appear, run: claude --init-only --debug and check the log.")
 
     if not found:
         log("no Claude Code or Codex config found on this machine.")
