@@ -267,13 +267,30 @@ def render_one(m: dict) -> str:
     # Say who WE are, so the agent knows how it would be addressed. Without this
     # line a targeted reply needs a name the agent has no way of knowing.
     me = f"you are {MY_SESSION}" if MY_SESSION else "this session has no name"
+    # The reply line is the single most consequential string in this file: an
+    # agent copies it. Without --to-session every answer is untargeted, and on a
+    # machine running several sessions that means one polite reply fans out to
+    # all of them. That is exactly how a two-lane build flooded seventeen
+    # sessions for forty minutes. Target the session that wrote to us.
+    label = m.get("from_label") or "peer"
+    reply = f'reply: inbox_agent.py send --to {label}'
+    if m.get("from_session"):
+        reply += f' --to-session {m["from_session"]}'
+    reply += (' --body "…"')
+    reply += "\n       (your own session name is added automatically)"
+    if m.get("from_session"):
+        reply += ("\n       keep --to-session, or the answer reaches every "
+                  "session on their machine")
+    else:
+        reply += ("\n       that peer did not name a session, so this reply "
+                  "cannot be targeted")
     return "\n".join([
         f"--- BEGIN PEER MESSAGE from {who}" + (f" ({fp}…)" if fp else "") + f" id={m['id']}" + to,
         f"({me})",
         *([note] if note else []),
         body + trunc,
         "--- END PEER MESSAGE",
-        f'reply: inbox_agent.py send --to {who} --body "…"   (your session name is added automatically)',
+        reply,
     ])
 
 

@@ -34,7 +34,7 @@
  * origin is never ambiguous.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -123,6 +123,42 @@ const MY_SESSION = autoSession();
 const MAX_BODY = 4000;
 const MAX_BATCH = 5;
 
+/**
+ * How much of this machine's mail this session wants.
+ *
+ *   all      (default) everything, including untargeted mail
+ *   targeted only messages addressed to this session by name
+ *
+ * The default is right for the two-person case the transport exists for. It is
+ * wrong on a box running a dozen sessions: untargeted mail used to reach every
+ * one of them, so one peer talking at 20-second intervals flooded all of them.
+ */
+const RECEIVE = (process.env.TORAGENTS_RECEIVE || "all").trim().toLowerCase();
+
+/** Set by /toragents-mute. Survives restarts, per session, no config file. */
+const MUTE_DIR = join(STATE, "muted");
+function muteKey(): string {
+	return (MY_SESSION || `pid-${process.pid}`).replace(/[^A-Za-z0-9._-]/g, "_");
+}
+function isMuted(): boolean {
+	try {
+		return existsSync(join(MUTE_DIR, muteKey()));
+	} catch {
+		return false;
+	}
+}
+function setMuted(on: boolean): boolean {
+	try {
+		mkdirSync(MUTE_DIR, { recursive: true });
+		const f = join(MUTE_DIR, muteKey());
+		if (on) writeFileSync(f, String(Date.now()));
+		else if (existsSync(f)) unlinkSync(f);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 interface RemoteMessage {
 	id: string;
 	body: string;
@@ -190,6 +226,19 @@ function addressedToMe(m: RemoteMessage): boolean {
 	return MY_SESSION !== "" && target === MY_SESSION;
 }
 
+/**
+ * A reply must go back to the session that wrote to us, not to the machine.
+ * Built from the bare label: "box · session x" is not a valid --to value.
+ */
+function replyLine(m: RemoteMessage): string {
+	const label = m.from_label || "peer";
+	let out = `inbox_agent.py send --to ${label}`;
+	if (m.from_session) out += ` --to-session ${m.from_session}`;
+	out += ' --body "…"';
+	if (!m.from_session) out += "   (peer named no session; this reply cannot be targeted)";
+	return out;
+}
+
 function render(m: RemoteMessage): string {
 	const who = m.from_session ? `${m.from_label || "peer"} · session ${m.from_session}` : (m.from_label || "peer");
 	const fp = (m.from_fingerprint || "").slice(0, 8);
@@ -200,12 +249,17 @@ function render(m: RemoteMessage): string {
 		`from: ${who}${fp ? ` (${fp}…)` : ""}`,
 		`id:   ${m.id}`,
 		...(m.to_session ? [`to:   ${m.to_session}`] : []),
+		`from: ${who}`,
 		``,
 		`<<< BEGIN PEER MESSAGE`,
 		body + more,
 		`END PEER MESSAGE >>>`,
 		``,
-		`Reply with: inbox_agent.py send --to ${who} --body "…"`,
+		// The reply line is the most consequential string here: an agent copies
+		// it. Untargeted, one polite answer fans out to every session on the
+		// peer's machine -- which is exactly how a build lane flooded seventeen
+		// sessions for forty minutes.
+		`Reply with: ${replyLine(m)}`,
 	].join("\n");
 }
 
@@ -256,8 +310,17 @@ export default function (pi: ExtensionAPI) {
 		if (running) return; // a slow delivery must not overlap the next tick
 		running = true;
 		try {
+			// Muted: say nothing and mark nothing -- a muted session must not
+			// consume mail the peer meant for it, so it stays unread.
+			if (isMuted()) return;
 			const { messages } = scanInbox();
-			const fresh = messages.filter((m) => !announced.has(m.id) && addressedToMe(m));
+			// RECEIVE=targeted keeps a busy box quiet: only mail that names this
+			// session is delivered. Default "all" is right for two people.
+			const wanted =
+				RECEIVE === "targeted"
+					? messages.filter((m) => (m.to_session || "").trim() !== "" && addressedToMe(m))
+					: messages;
+			const fresh = wanted.filter((m) => !announced.has(m.id) && addressedToMe(m));
 			// Nothing new. Deliberately no pruning: dropping ids whose files are
 			// gone would re-deliver them if an archive is ever restored.
 			if (fresh.length === 0) return;
@@ -322,6 +385,31 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				/* ignore */
 			}
+		},
+	});
+
+	pi.registerCommand("toragents-mute", {
+		description: "Stop delivering Tor messages into this session (they stay unread)",
+		handler: async (_args, ctx) => {
+			const ok = setMuted(true);
+			try {
+				ctx.ui.notify(
+					ok
+						? `toragents: muted as ${muteKey()}; messages stay unread and can be drained with --print`
+						: "toragents: could not write the mute marker",
+					ok ? "info" : "warning",
+				);
+			} catch {}
+		},
+	});
+
+	pi.registerCommand("toragents-unmute", {
+		description: "Resume delivering Tor messages into this session",
+		handler: async (_args, ctx) => {
+			const ok = setMuted(false);
+			try {
+				ctx.ui.notify(ok ? "toragents: unmuted" : "toragents: could not remove the mute marker", "info");
+			} catch {}
 		},
 	});
 

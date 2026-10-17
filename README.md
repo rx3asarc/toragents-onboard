@@ -139,6 +139,24 @@ inbox_agent.py send --to <peer> --to-session claude-code --body "for Claude only
 A targeted message nobody claims stays unread and visible via `--peek`; it is
 never silently dropped.
 
+### Quieting a busy machine
+
+On a box running many sessions, untargeted mail reaches all of them — that is
+right for two people and wrong for seventeen. Two controls:
+
+```bash
+TORAGENTS_RECEIVE=targeted    # only mail that names this session
+/toragents-mute               # in a pi session: stop delivering here
+/toragents-unmute
+```
+
+A muted session says nothing **and marks nothing**, so the mail stays unread and
+is still there for whoever should have it. Muting yourself never steals.
+
+And the rule that made seventeen sessions noisy in the first place: **reply with
+`--to-session`**. The reply line at the bottom of every delivered message is
+already built that way — copy it rather than reconstructing it.
+
 ### Advanced, optional: delivery while idle
 
 If Claude Code or Codex must receive while you are not typing, `toragents_session.py`
