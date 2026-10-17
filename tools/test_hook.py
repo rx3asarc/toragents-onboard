@@ -164,6 +164,25 @@ for name, data in [
     dd = mkstate(1)
     check(f"payload encoding: {name}", "BEGIN PEER MESSAGE" in run_raw(dd, data))
 
+# ---- the human has to see it too -------------------------------------------
+# Context injection is invisible in the UI: Claude Code gives additionalContext
+# to the model and shows the person nothing, so their chat looks like a turn
+# where an agent mysteriously started talking about a message nobody saw.
+# systemMessage is the documented user-visible field ("Display a message to the
+# user (all hooks)"), so both parties get told.
+d6 = mkstate(1, body="private content that must not be on screen")
+_, vis, _ = run(d6, {"hook_event_name": "SessionStart", "session_id": "cccc3333"})
+try:
+    j = json.loads(vis)
+except Exception:
+    j = {}
+sm = j.get("systemMessage", "")
+check("systemMessage present for the human", bool(sm), vis[:200])
+check("systemMessage names the sender", "maestro-pc" in sm, sm)
+check("systemMessage does NOT leak the body", "private content" not in sm, sm)
+check("additionalContext still delivered to the agent",
+      "private content" in j.get("hookSpecificOutput", {}).get("additionalContext", ""))
+
 check("--peek never marks", run(d3, {}, "--peek")[1] != "" and ann(d3) is None)
 
 print(f"\n  {PASS} passed, {FAIL} failed")

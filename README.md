@@ -139,6 +139,28 @@ inbox_agent.py send --to <peer> --to-session claude-code --body "for Claude only
 A targeted message nobody claims stays unread and visible via `--peek`; it is
 never silently dropped.
 
+### What the *human* sees
+
+An injected message is the agent's business. Whether the person watching the chat
+sees anything depends on the harness:
+
+| harness | the agent gets it | the human sees it |
+|---|---|---|
+| pi | yes, in-transcript | **yes** — it is a normal message |
+| Claude Code | yes, as hook context | **yes** — a one-line `systemMessage` above the turn |
+| Codex | yes, if hooks are trusted | yes, same field (unverified at runtime) |
+| no hooks | — | no; run `--peek` yourself |
+
+The two audiences are told separately and differently: the agent gets the full
+fenced message, the person gets one line naming the sender —
+
+```
+📨 2 messages over Tor from maestro-pc -- delivered to this session
+```
+
+— and never the body. It is on a screen someone else may be looking at, and the
+agent already has the text.
+
 ### Quieting a busy machine
 
 On a box running many sessions, untargeted mail reaches all of them — that is

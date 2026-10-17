@@ -330,6 +330,28 @@ def render(batch: list[dict], total_unread: int) -> str:
     return text
 
 
+def user_summary(text: str) -> str:
+    """One line a human can read, naming the sender and the count.
+
+    Deliberately NOT the body: it is on screen, possibly over a shoulder, and the
+    agent already has the full text. What the person needs is the fact and the
+    source -- "something arrived from maestro-pc" -- not the payload.
+    """
+    ids = text.count("--- BEGIN PEER MESSAGE")
+    if not ids:
+        return ""
+    senders = []
+    for line in text.splitlines():
+        if line.startswith("--- BEGIN PEER MESSAGE from "):
+            who = line[len("--- BEGIN PEER MESSAGE from "):].split(" (")[0].split(" id=")[0]
+            who = who.split(" \u00b7 session")[0].strip()   # the session is detail here
+            if who and who not in senders:
+                senders.append(who)
+    who = ", ".join(senders[:3]) + (" and others" if len(senders) > 3 else "")
+    what = "1 message" if ids == 1 else f"{ids} messages"
+    return f"\U0001F4E8 {what} over Tor from {who} -- delivered to this session"
+
+
 def emit(text: str, event: str | None, manual: bool) -> bool:
     """Write the answer, then prove it left. A closed stdout means the harness
     gave up (a Claude UserPromptSubmit timeout does exactly this); print() buffers
@@ -338,10 +360,18 @@ def emit(text: str, event: str | None, manual: bool) -> bool:
     if manual:
         print(text)
     elif event in ("SessionStart", "UserPromptSubmit", "SubagentStart"):
-        print(json.dumps({
-            "hookSpecificOutput": {"hookEventName": event, "additionalContext": text}
-        }))
+        out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+        # The human, not only the agent. additionalContext is invisible in the
+        # UI: Claude Code hands it to the model and shows nothing, so a person
+        # watching their own chat sees a silent turn and cannot tell mail arrived.
+        # `systemMessage` is the documented way to put one line in front of them
+        # ("Display a message to the user (all hooks)"), so both get told.
+        summary = user_summary(text)
+        if summary:
+            out["systemMessage"] = summary
+        print(json.dumps(out))
     elif event in ("Stop", "SubagentStop"):
+        # The Stop path already shows its reason in the UI as a hook message.
         print(json.dumps({"decision": "block", "reason": text}))
     else:
         return False
