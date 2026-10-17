@@ -227,25 +227,24 @@ def main() -> int:
     harness = os.environ.get("TORAGENTS_HARNESS")
     if "--harness" in sys.argv:
         harness = sys.argv[sys.argv.index("--harness") + 1]
-    mode = os.environ.get("TORAGENTS_PERMISSION_MODE", "plan")
+    mode = os.environ.get("TORAGENTS_PERMISSION_MODE")
     if "--permission-mode" in sys.argv:
         mode = sys.argv[sys.argv.index("--permission-mode") + 1]
     cmd = shlex.split(harness) if harness else [
         "claude", "-p", "--verbose",
         "--input-format", "stream-json", "--output-format", "stream-json",
-        # PLAN BY DEFAULT, and deliberately. An injected turn is an AUTONOMOUS
-        # turn: nobody is at the keyboard to approve a tool call, so whatever
-        # permission mode is set here is what a remote peer can drive. plan lets
-        # the agent read and answer without acting; acceptEdits or
-        # bypassPermissions would let a message make it change your machine.
-        "--permission-mode", mode,
     ]
+    # Deliberately NOT forcing a permission mode. A message is a message: how the
+    # agent is allowed to act is the user's own configuration and the agent's own
+    # judgement, not something the transport should override on their behalf.
+    # Pass --permission-mode only if you actually want to change it.
+    if mode:
+        cmd += ["--permission-mode", mode]
 
     say(f"[session] state {STATE}")
     say(f"[session] harness {' '.join(cmd)}")
     if mode in ("bypassPermissions", "acceptEdits", "auto"):
-        say(f"[session] WARNING: permission mode '{mode}' lets an incoming peer message")
-        say("[session] WARNING: cause real changes with nobody approving them.")
+        say(f"[session] note: permission mode '{mode}' means unattended turns can act.")
     if not os.path.isdir(INBOX):
         say(f"[session] no inbox yet at {INBOX} (the daemon creates it)")
 

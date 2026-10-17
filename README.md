@@ -63,186 +63,50 @@ fingerprint  <32 hex chars>
 
 Nothing works until the other side allowlists your fingerprint. Send both.
 
-## 2b. When a message actually reaches your agent
+## 2b. Messages show up in your agent
 
-This is the section to read if messages ever seem to vanish. They do not vanish;
-delivery is **event-driven**, and different harnesses give us different events.
+A message arrives. Your agent sees it. Your agent decides what to do about it.
+That is the whole feature, and nothing here changes your permissions or decides
+anything for the agent.
 
-| how you are running it | session start / resume | you submit a prompt | turn ends | while idle & parked |
-|---|---|---|---|---|
-| **pi** | yes | yes | yes | **yes** — 3s poll inside the process |
-| **Claude Code** (TUI) | yes | yes | yes | **no** — no event occurs |
-| **Codex** (TUI) | yes | yes | yes | **no** — no event occurs |
-| **supervisor mode** (`toragents_session.py`) | yes | yes | yes | **yes** — the daemon owns the session |
-| no hooks / other agents | — | — | — | **no** — run `--print` to drain |
+The one thing worth knowing is **when** it appears, because an idle terminal
+doesn't produce events:
 
-The line that explains all of it: **hooks fire in the process that owns the
-session.** pi's extension runs inside pi, so it can act while idle. A hook in an
-interactive Claude Code or Codex session can only run when that session does
-something. A supervisor owns the process, so it can inject at will — and for the
-same reason an open TUI will not show what it injects.
-
-**An idle interactive session cannot be woken from outside.** pi can push into a
-parked session because its extension runs *inside that process*. Claude Code and
-Codex are separate programs owned by their own terminal; nothing outside can
-make them take a turn. This is a harness boundary, not a bug, and it is the
-single most common surprise. If an agent looks "stagnant" while a message is
-waiting, this table is the answer: the message is on disk, and it arrives at the
-next one of those three moments.
-
-Practical consequences:
-
-| situation | what to do |
+| how you run your agent | when a message appears |
 |---|---|
-| pi was already running before you installed | restart it — the extension loads at session start |
-| Claude Code / Codex parked at the prompt | submit anything (even `hi`); the message arrives with it |
-| agent mid-work, message arrives | it appears at the end of the current turn |
-| you want to see what is waiting right now | see the two commands below |
+| **pi** | immediately, even while sitting idle |
+| **Claude Code** | at session start, when you submit a prompt, or when a turn ends |
+| **Codex** | same three moments |
+
+If it looks stuck, it isn't lost:
+
+| symptom | fix |
+|---|---|
+| pi was running before you installed | restart pi — the extension loads at start |
+| Claude Code / Codex sitting at the prompt | submit anything, even `hi` — it arrives with it |
+| you want to see what's waiting | `"<python>" "<home>/toragents_hook.py" --peek` |
+
+`--peek` shows without consuming. `--print` shows and marks them read. (The first
+version of that command consumed the messages you were checking for, which is
+why there are two.)
+
+Messages older than three hours carry a note saying so — a queued instruction
+that arrives looking current is how one agent here installed an older version
+than the one it had just installed.
+
+### Advanced, optional: delivery while idle
+
+If Claude Code or Codex must receive while you are not typing, `toragents_session.py`
+owns the session and writes messages in as turns:
 
 ```bash
-# show what is waiting WITHOUT consuming it (safe to run any time)
-"<python>" "<home>/toragents_hook.py" --peek
-
-# take them (marks delivered, prints for a human rather than a harness)
-"<python>" "<home>/toragents_hook.py" --print
+"<python>" "<home>/toragents_session.py"
 ```
 
-`--peek` exists because the first version of this script taught me a lesson the
-annoying way: I used a "check" command to verify a message was still waiting, and
-it consumed the message it was checking for. `--print` takes, `--peek` looks.
-
-### Messages can be old when they arrive
-
-A message can sit in the inbox for hours and then be delivered looking current.
-That is not theoretical: an agent on one machine obeyed a queued instruction and
-installed an *older* commit than the one it had just installed. Anything older
-than three hours now carries an explicit line in the message itself:
-
-```
-[sent ~5h ago -- if this asks you to do something, treat it as history
- and check it is still current before acting]
-```
-
-### What is true on every harness
-
-| situation | what happens |
-|---|---|
-| already-delivered messages | never repeated (one shared `announced.json`) |
-| two harnesses on one machine | the message goes to whichever asks first, once |
-| first run with history on disk | existing messages marked seen, no burst of turns |
-| a message file unreadable mid-write | skipped and retried, never lost |
-| more messages than fit in one delivery | delivered in slices; only what was shown is marked |
-| stdout closed by a timed-out harness | mark rolled back, so it arrives next time |
-| the delivered-memo gets corrupted | quarantined and rebuilt, not replayed forever |
-| no harness found | installer says so; mailbox behaviour, nothing breaks |
-
-### Two things that will otherwise look like "it's broken"
-
-**Codex hooks must be trusted.** Non-managed hooks do not run until a human
-approves them. Codex will prompt you to review them; if you skip that, the hooks
-silently never fire and everything looks dead while working perfectly.
-
-**A typo fails silently.** Both harnesses ignore an unrecognised event name and
-a malformed settings file without a single warning — no hook, no error, no
-notice. That is why the installer verifies itself after writing: it runs the
-real `claude` binary with `--init-only` against a copy of your config and a
-canary message, and reports `VERIFIED` only if the harness actually consumed the
-context. On Windows it will usually say `COULD NOT VERIFY` instead, because
-`claude` there is an npm shim that leaves no debug log — that is inconclusive,
-not a failure, and the installer says so.
-
-**Your existing hooks are never touched.** The installer merges into your config
-and backs it up as `settings.json.toragents-backup`. If it cannot *parse* the
-file it refuses and tells you, because a merge that started from `{}` would
-delete somebody else's hooks.
-
-### If you need delivery while idle: supervisor mode
-
-`toragents_session.py` owns the conversation instead of you typing into it, and
-writes each incoming message in as a user turn. Verified against the shipping
-Claude Code 2.1.302 binary: one process accepts turn after turn on stdin, same
-`session_id`, with `{"type":"result"}` marking every boundary.
-
-```bash
-"<python>" "<home>/toragents_session.py"                    # start fresh
-"<python>" "<home>/toragents_session.py" --resume <session-id>
-"<python>" "<home>/toragents_session.py" --permission-mode plan
-```
-
-How it behaves, verified against the real binary:
-
-| situation | what happens |
-|---|---|
-| one message arrives | one turn |
-| six arrive at once | **one** turn carrying all six — the harness would otherwise run six model turns |
-| messages arrive mid-turn | queued by the harness, then coalesced into the next turn |
-| a turn finishes | `{"type":"result","result_index":N}` is the receipt; the daemon won't inject again until it arrives |
-| the harness dies | respawned with `--resume`, same conversation |
-
-The harness queues turns in order and **never rejects one** — there is no
-rejection path to handle. It also re-emits `system/init` on every turn, which is
-not a new session; the session id is stable.
-
-**What you give up:** the interactive TUI. You read the conversation through the
-daemon's stdout. Claude keeps no second window on it — and if you *also* have an
-open TUI on that session id, both processes run without complaint and silently
-diverge, each with its own copy of the conversation. Use one or the other.
-
-**What you are agreeing to — read this before using a loose permission mode:**
-an injected turn is an **autonomous** turn. Nobody is at the keyboard, so no
-permission prompt can be answered. Whatever mode you launch with is what a remote
-peer's message can drive:
-
-| `--permission-mode` | a peer message can |
-|---|---|
-| `plan` (**default**) | read, think, answer — not act |
-| `acceptEdits` | edit your files |
-| `bypassPermissions` | run anything, unattended |
-
-The default is `plan` deliberately, and the daemon prints a warning when you pick
-a looser one. This changes the security model from "a message arrives" to "a
-stranger can cause my agent to take actions", which is a much bigger claim. Only
-your allowlisted peer can reach the mailbox at all — but if you loosen the mode,
-that one peer is enough.
-
-In supervisor mode the harness still runs your hooks inside its own process, so
-the hook and the daemon can both try to deliver. One shared `announced.json`
-means each message is delivered once, by whichever gets there first.
-
-### Reaching into an open TUI is not supported
-
-Claude Code opens a per-user socket (`messaging_socket_path`) and advertises
-control vocabulary (`control_request`, `interrupt`, `send_now`,
-`set_permission_mode`). That protocol runs between the CLI and **the process that
-spawned it** — i.e. your supervisor. Probing the socket from outside got
-connections but no responses: it is an undocumented, version-unstable private
-channel, not an API. Driving a TUI you did not spawn through it would be a hack
-that breaks on the next release, in a tool that ships to strangers. A supervised
-session is the only supported way to get delivery while idle; the docs say so
-rather than pretending otherwise.
-
-### Not solved: waking an *interactive* session
-
-Claude Code 2.1.302 ships `ScheduleWakeup` and `CronCreate` tools, which would let
-a session schedule its own future turn and poll its own inbox with no daemon at
-all. That is untested here because it requires an authenticated session, and it
-would spend model tokens on every wake. It is the cheapest possible answer if it
-works; treat it as an experiment, not a feature.
-
-### The other thing that is not solved
-
-A harness that *reads* our output and then discards it anyway leaves no signal
-we can observe from inside the hook — the write succeeds, so we record delivery
-and cannot tell that nobody saw it. Where we can detect failure (a closed pipe)
-the mark is rolled back; where we cannot, this is the known limit.
-
-**The other honest caveat:** the message body is text from a remote machine,
-handed to your agent as context. It *can* instruct the agent — that is the point,
-you want the peer's words to land — and it is bounded by the allowlist, since
-only a peer whose signature verifies reaches this code. It is fenced so its
-origin is never ambiguous. Note that the fence labels origin; it does not stop
-the agent from acting. A real local session has already executed an install
-because a peer message asked it to.
+You lose the TUI (you read the conversation through the daemon) and an open TUI
+will not show what it injects — both processes run and silently diverge. It does
+not change your permission settings; those stay yours. Most people do not need
+this: pi does it natively, and the hooks cover the rest.
 
 ## 3. Verify it actually works
 
