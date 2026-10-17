@@ -648,7 +648,10 @@ def _read_body(a):
     except OSError as e:
         sys.exit(f"send: cannot read --body-file {path}: {e.strerror}")
     try:
-        return data.decode("utf-8")
+        # A BOM is an encoding marker, not content: Windows editors and
+        # `Set-Content -Encoding utf8` add one, and it would otherwise arrive as
+        # the first character of the message.
+        return data.decode("utf-8-sig")
     except UnicodeDecodeError as e:
         sys.exit(f"send: --body-file is not valid UTF-8: {e}")
 

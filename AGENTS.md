@@ -180,3 +180,34 @@ agent is told who it is and can address a reply to a specific session with
   attach to that person's identity.
 - Messages are plaintext on both machines and on the path. This is a private
   two-person channel, not a secret one.
+
+### Testing the hook on Windows, without lying to yourself
+
+Two encodings will make a perfectly healthy hook print nothing, and silence is
+the correct answer to input it cannot parse — so the failure looks exactly like
+success:
+
+```powershell
+# WRONG: PowerShell pipes strings as UTF-16LE, so the JSON arrives full of NULs
+echo '{ "hook_event_name": "SessionStart" }' | python toragents_hook.py
+
+# WRONG: Windows PowerShell 5.1 writes UTF-8 *with a BOM*, which json refuses
+Set-Content -Path payload.json -Value '{"hook_event_name":"SessionStart"}' -Encoding utf8
+Get-Content payload.json -Raw | python toragents_hook.py
+```
+
+The hook now decodes both (BOM, and UTF-16 with or without one), so either form
+works. But the third way to be wrong is the dangerous one:
+
+**`--peek` cannot verify the payload path.** It renders whatever is waiting,
+whatever the event, before any payload is consulted — so it will print a
+beautiful message while the harness's real invocation is silently failing. To
+test what the harness will actually experience, send the payload on stdin with no
+flags at all, and to prove the queue is really the thing being rendered, write a
+message file the hook has certainly never seen.
+
+> A test that cannot fail is not a test. Three of them were written in one
+> session — `--peek` masking the encoding, an assertion on raw stdout where
+> `json.dumps` had already escaped the character being searched for, and a
+> re-run against a module Bun had cached. Reproduce the failure first, or you
+> are only measuring your own optimism.

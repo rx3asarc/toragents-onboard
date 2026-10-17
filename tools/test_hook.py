@@ -140,6 +140,30 @@ _, anon_out, _ = run(d5, {"hook_event_name": "SessionStart", "session_id": "bbbb
 check("unnamed peer: reply line admits it cannot be targeted",
       "cannot be targeted" in context_text(anon_out), anon_out[-200:])
 
+# ---- the payload encoding Windows actually hands us ------------------------
+# Silence is the correct answer to unparseable input, which makes an encoding
+# mismatch indistinguishable from "nothing to say". Both cases below were
+# reported from a real Windows box as "the hook prints nothing", and both were
+# the harness's encoding, not the hook: Set-Content -Encoding utf8 writes a BOM,
+# and `echo '...' | python` pipes UTF-16LE.
+def run_raw(d, data: bytes):
+    e = dict(os.environ, TORAGENTS_HOME=d); e.pop("TORAGENTS_STATE", None)
+    # NOT --peek: peek bypasses payload parsing entirely (it renders whatever is
+    # waiting, whatever the event), so it cannot see an encoding failure. The
+    # first version of these tests used it and passed against the broken hook --
+    # a test that could not fail.
+    p = subprocess.run([PY, HOOK], input=data, capture_output=True, env=e)
+    return p.stdout.decode("utf-8", "replace")
+
+payload = b'{"hook_event_name": "SessionStart"}'
+for name, data in [
+    ("utf-8 with BOM (Set-Content -Encoding utf8)", b"\xef\xbb\xbf" + payload),
+    ("utf-16LE no BOM (echo | python)", payload.decode().encode("utf-16-le")),
+    ("utf-16LE with BOM", b"\xff\xfe" + payload.decode().encode("utf-16-le")),
+]:
+    dd = mkstate(1)
+    check(f"payload encoding: {name}", "BEGIN PEER MESSAGE" in run_raw(dd, data))
+
 check("--peek never marks", run(d3, {}, "--peek")[1] != "" and ann(d3) is None)
 
 print(f"\n  {PASS} passed, {FAIL} failed")

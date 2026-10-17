@@ -373,6 +373,39 @@ def remember_session() -> None:
         pass
 
 
+def _decode_payload(data: bytes) -> str:
+    """The hook payload, from whatever encoding Windows actually handed us.
+
+    Silence is the hook's correct answer to unparseable input, which makes an
+    encoding mismatch indistinguishable from "nothing to say" -- a false negative
+    nobody can see. Measured on Windows twice:
+
+      * `echo '{"..."}' | python hook.py` pipes UTF-16LE, so the JSON arrives
+        interleaved with NUL bytes;
+      * `Set-Content -Encoding utf8` writes a UTF-8 BOM, and json.loads refuses
+        a document that starts with one.
+
+    Both produce a silent, perfectly healthy-looking hook. Decoding them here is
+    cheaper than teaching every future reader the difference between "nothing"
+    and "could not read".
+    """
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        try:
+            return data.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data.decode("utf-8-sig")
+    if b"\x00" in data:
+        # UTF-16 without a BOM: every ASCII character drags a NUL with it.
+        for enc in ("utf-16-le", "utf-16-be"):
+            try:
+                return data.decode(enc)
+            except UnicodeDecodeError:
+                continue
+    return data.decode("utf-8", "replace")
+
+
 def main() -> int:
     global MY_SESSION
     setup_stdout()
@@ -382,7 +415,7 @@ def main() -> int:
     payload = None
     try:
         if not sys.stdin.isatty():
-            raw = sys.stdin.read()
+            raw = _decode_payload(sys.stdin.buffer.read())
         if raw.strip():
             payload = json.loads(raw)
             event = payload.get("hook_event_name") if isinstance(payload, dict) else None
