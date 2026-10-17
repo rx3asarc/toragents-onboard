@@ -22,6 +22,7 @@ Usage
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
 import secrets
@@ -111,24 +112,45 @@ def need_keys():
     return k
 
 
-def peers():
-    """Return the allowlist map, or None if the file exists but is unreadable.
+# Retry-on-failure keeps the peers we already have. That is right for a
+# TRANSIENT fault, and wrong for a DELIBERATE one: if an operator revokes a
+# compromised peer by rewriting peers.json and the result is unreadable or
+# invalid, keeping stale peers would leave the revoked key allowlisted. So the
+# two failure classes are treated differently:
+#
+#   absent      -> {}           nothing configured yet
+#   unreadable  -> KEEP + retry I/O error: permissions, fd limit, unsynced file
+#   corrupt     -> FAIL CLOSED  readable but not a valid allowlist: do not trust it
+#
+# save_peers() writes tmp+os.replace, so our own writes can never truncate the
+# file; "corrupt" means someone edited it by hand or the disk lost a block.
+PEERS_ABSENT = "absent"
+PEERS_OK = "ok"
+PEERS_UNREADABLE = "unreadable"
+PEERS_CORRUPT = "corrupt"
 
-    The distinction is load-bearing. Returning {} for both "no peers configured"
-    and "could not read peers.json" means a transient failure (permissions, fd
-    limit, a half-synced or corrupt file) silently produces an EMPTY allowlist,
-    and every peer is then rejected with no error anywhere — the log just says
-    "0 allowed", which reads like a legitimate result. Absent file -> {}.
-    Unreadable file -> None, and callers must keep what they already have.
-    """
+
+def peers_state():
+    """(status, mapping) — see the table above. Never raises."""
     if not os.path.exists(PEERS):
-        return {}
+        return PEERS_ABSENT, {}
     try:
         with open(PEERS) as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+            raw = f.read()
+    except OSError:
+        return PEERS_UNREADABLE, None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return PEERS_CORRUPT, None
+    if not isinstance(data, dict):
+        return PEERS_CORRUPT, None
+    return PEERS_OK, data
+
+
+def peers():
+    """Just the mapping; {} when absent or unusable. For read-only commands."""
+    return peers_state()[1] or {}
 
 
 def save_peers(p):
@@ -137,6 +159,19 @@ def save_peers(p):
     with open(tmp, "w") as f:
         json.dump(p, f, indent=2, sort_keys=True)
     os.replace(tmp, PEERS)
+
+
+def _self_fingerprint():
+    """Short sha256 of the file that is actually executing.
+
+    The box once ran a daemon no user ran, which is exactly how two shipped bugs
+    stayed invisible. This makes "which code is live" answerable from the log.
+    """
+    try:
+        with open(os.path.abspath(__file__), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except OSError:
+        return "unknown"
 
 
 def onion():
@@ -225,7 +260,7 @@ class Inbox:
     def __init__(self):
         self.k = keys(create=True)   # a daemon coming up is allowed to mint
         self.nonces = Nonces()
-        loaded = peers()
+        status, loaded = peers_state()
         self.peers = loaded if loaded is not None else {}
         self._peers_warned = None
         self.lock = threading.Lock()
@@ -249,12 +284,21 @@ class Inbox:
         now = self._mtime()
         if now == self._peers_mtime:
             return
-        loaded = peers()
-        if loaded is None:
+        status, loaded = peers_state()
+        if status == PEERS_UNREADABLE:
             if now != self._peers_warned:
                 print(f"[inbox] peers.json unreadable; keeping "
                       f"{len(self.peers)} allowed peer(s), will retry", flush=True)
                 self._peers_warned = now
+            return
+        if status == PEERS_CORRUPT:
+            # Readable but invalid: fail closed rather than trust stale peers,
+            # because this is also what a botched revocation looks like.
+            self.peers = {}
+            self._peers_mtime = now
+            self._peers_warned = None
+            print(f"[inbox] peers.json is CORRUPT; failing closed with 0 allowed "
+                  f"peer(s) until it is fixed: {PEERS}", flush=True)
             return
         # No lock here on purpose: the caller already holds self.lock and
         # threading.Lock is not reentrant. Assigning the dict reference is
@@ -421,6 +465,8 @@ def send_to(target_onion, body, k=None):
 
 # ------------------------------------------------------------------- cli --
 def cmd_serve(a):
+    print(f"[inbox] running inbox_agent.py sha256={_self_fingerprint()} "
+          f"state={STATE}", flush=True)
     serve()
 
 
@@ -442,8 +488,21 @@ def cmd_whoami(a):
     print(f"fingerprint  {k.public().fingerprint}")
 
 
+def _writable_peers():
+    """Allowlist for a read-modify-write. Refuses to start from a bad file.
+
+    Rewriting a file you could not read is how one broken allowlist becomes one
+    peer and a silent revocation of everyone else.
+    """
+    status, p = peers_state()
+    if status in (PEERS_UNREADABLE, PEERS_CORRUPT):
+        sys.exit(f"refusing to modify {PEERS}: it is {status}. "
+                 f"Fix or delete the file first.")
+    return p or {}
+
+
 def cmd_add_peer(a):
-    p = peers()
+    p = _writable_peers()
     fp = a.fingerprint.strip().lower()
     if len(fp) != 32:
         sys.exit(f"fingerprint must be 32 hex chars (got {len(fp)})")
