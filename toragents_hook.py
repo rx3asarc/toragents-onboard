@@ -732,7 +732,12 @@ def main() -> int:
         trace(event, "badge")
         return 0
     peek = "--peek" in sys.argv
-    manual = "--print" in sys.argv or peek
+    # doctor runs the configured command to prove it works. That probe must look
+    # without taking: a diagnostic that consumes somebody's mail is not a diagnostic.
+    peek_json = bool(os.environ.get("TORAGENTS_PEEK_JSON"))
+    if peek_json:
+        peek = True
+    manual = "--print" in sys.argv or ("--peek" in sys.argv)
     if not manual:
         sys.stdout = _NullStdout()   # only the payload may escape
 
@@ -750,10 +755,18 @@ def main() -> int:
         # claim them. Manual drain shows everything -- that is the escape hatch.
         msgs = [m for m in msgs if addressed_to_me(m)]
     if not msgs:
-        if manual:
-            print(f"no new messages ({INBOX})")
-        trace(event, "nothing-pending")
-        return 0
+        if peek_json:
+            # The self-test must work on a QUIET machine -- that is the state a
+            # person is usually in when something looks broken. Prove the hook can
+            # speak without inventing a message that looks like real mail.
+            msgs = [{"id": "doctor-probe", "from_label": "doctor",
+                     "body": "(self-test) the hook is alive and can deliver; this is not mail",
+                     "received": time.time()}]
+        else:
+            if manual:
+                print(f"no new messages ({INBOX})")
+            trace(event, "nothing-pending")
+            return 0
 
     # A Stop hook already continued this turn: say nothing, or the agent can
     # bounce forever between "stop" and "here is another message".
@@ -769,8 +782,10 @@ def main() -> int:
     trace(event, "delivered", f"ids={[m['id'] for m in batch]} n_pending={len(msgs)}")
 
     if peek:
-        # Look, do not take. Nothing is marked and nothing is at risk.
-        arrived = emit(text, event, manual=True)
+        # Look, do not take. Nothing is marked and nothing is at risk. The doctor
+        # probe wants the JSON the harness would receive, not prose for a person.
+        arrived = emit(text, event, manual=not peek_json)
+        trace(event, "peek-json" if peek_json else "peek")
         return 0 if arrived else 0
 
     # Mark BEFORE emitting, because the Stop decision depends on whether the memo

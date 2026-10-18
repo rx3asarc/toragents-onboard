@@ -25,7 +25,10 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
+import shutil
+import subprocess
 import socket
 import sys
 import threading
@@ -572,6 +575,82 @@ def send_to(target_onion, body, k=None, session=None, to_session=None):
 
 
 # ------------------------------------------------------------------- cli --
+
+def _self_test(claude: str) -> None:
+    """Run the hook exactly as configured and report what actually comes back."""
+    try:
+        cfg = json.load(open(claude))
+    except FileNotFoundError:
+        print("  skipped: no settings.json")
+        return
+    except ValueError as e:
+        print(f"  BROKEN: settings.json does not parse ({e})")
+        print("  Claude Code ignores an unparseable settings file completely, and says")
+        print("  nothing at all. Fix the JSON, or reinstall to regenerate it.")
+        return
+    if not isinstance(cfg, dict):
+        print("  BROKEN: settings.json is not an object")
+        return
+    if cfg.get("disableAllHooks"):
+        print("  BROKEN: disableAllHooks is true -- no hook can ever run")
+    ours = [h.get("command") or ""
+            for arr in (cfg.get("hooks") or {}).values()
+            for g in arr for h in g.get("hooks", [])
+            if "toragents_hook" in (h.get("command") or "")]
+    if not ours:
+        print("  BROKEN: no toragents hook is registered in settings.json")
+        return
+    cmd = ours[0]
+    parts = [x.strip('"') for x in re.findall(r'"[^"]*"|\S+', cmd)]
+    exe = parts[0] if parts else ""
+    script = parts[1] if len(parts) > 1 else ""
+    exe_ok = (os.path.exists(exe) if os.path.isabs(exe) else bool(shutil.which(exe)))
+    script_ok = os.path.exists(script) if script else False
+    print(f"  interpreter  {exe} -- {'found' if exe_ok else 'MISSING'}")
+    if script:
+        print(f"  hook script  {script} -- {'found' if script_ok else 'MISSING'}")
+    if not exe_ok:
+        print("  result       cannot run: the interpreter path does not exist. Every")
+        print("               message will be dropped silently -- reinstall to fix the path.")
+        return
+    if script and not script_ok:
+        print("  result       cannot run: the hook script is missing. Reinstall.")
+        return
+    probe = b'{"hook_event_name":"UserPromptSubmit","session_id":"doctor-probe"}'
+    env = dict(os.environ)
+    env["TORAGENTS_PEEK_JSON"] = "1"   # look, do not take
+    try:
+        r = subprocess.run(parts, input=probe, capture_output=True, timeout=25, env=env)
+    except subprocess.TimeoutExpired:
+        print("  result       TIMED OUT -- a slow hook costs up to 30s per prompt")
+        return
+    except OSError as e:
+        print(f"  result       could not run: {e}")
+        return
+    raw = r.stdout.decode("utf-8", "replace").strip()
+    err = r.stderr.decode("utf-8", "replace").strip()
+    if not raw:
+        print(f"  result       EMPTY stdout (exit {r.returncode}). Claude Code would")
+        print("               inject nothing, silently. This hook as configured is mute.")
+    else:
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            print(f"  result       stdout is not valid JSON (exit {r.returncode}) --")
+            print("               Claude Code discards the whole output without a word")
+            obj = None
+        if isinstance(obj, dict):
+            hs = obj.get("hookSpecificOutput") or {}
+            if hs.get("hookEventName"):
+                print(f"  result       works: emitted {hs['hookEventName']} JSON, exit {r.returncode}")
+            elif "decision" in obj:
+                print(f"  result       works: emitted a decision, exit {r.returncode}")
+            elif obj.get("systemMessage"):
+                print(f"  result       works but carries no context, exit {r.returncode}")
+    if err:
+        print(f"  stderr       {err.splitlines()[0][:120]}")
+
+
 def cmd_doctor(a):
     """Answer "is the receiving half actually wired up on THIS machine?".
 
@@ -632,6 +711,19 @@ def cmd_doctor(a):
                 print(f"  {mid:14} {meta.get('at','?')}  by {meta.get('by','?')}")
     except (OSError, ValueError):
         pass
+
+    # ------------------------------------------------------------------
+    # Can the CONFIGURED COMMAND actually run? Measured on Claude Code 2.1.87:
+    # a settings.json that does not parse, a missing script, a missing
+    # interpreter, a command not on PATH, and a hook that exits 1 ALL fail
+    # silently -- no stderr, no message, nothing injected. Reading a trace is
+    # useless if the command could never have run, so prove it here.
+    # ------------------------------------------------------------------
+    print("\n  hook command self-test")
+    try:
+        _self_test(claude)
+    except Exception as e:          # a diagnostic must never be what breaks
+        print(f"  self-test could not run: {type(e).__name__}: {e}")
 
     print("\n  hook trace (what actually ran)")
     log = os.path.join(state, "hook.log")

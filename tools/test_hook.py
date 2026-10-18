@@ -312,6 +312,43 @@ check("stdout: unsupported event emits nothing", out.strip() == "", out[:80])
 check("trace: unsupported event is recorded, not silent",
       "unsupported-event" in open(os.path.join(d17, "state", "hook.log")).read(), "missing")
 
+# ---- the doctor probe must look without taking --------------------------------
+d18 = mkstate(1)
+e18 = dict(os.environ, TORAGENTS_HOME=d18, TORAGENTS_PEEK_JSON="1")
+e18.pop("TORAGENTS_STATE", None)
+p18 = subprocess.run([PY, HOOK], input=b'{"hook_event_name":"UserPromptSubmit","session_id":"efef5656"}',
+                     capture_output=True, env=e18)
+out18 = p18.stdout.decode()
+check("peek-json: emits one JSON object for the harness", out18.strip().startswith("{") and p18.returncode == 0, out18[:60])
+check("peek-json: marks nothing", not os.path.exists(os.path.join(d18, "state", "announced.json")), "marked")
+check("peek-json: mail stays in the inbox", len(os.listdir(os.path.join(d18, "state", "inbox"))) == 1, "consumed")
+
+# ---- doctor must diagnose a config that could never run ----------------------
+def doctor(home, state):
+    e = dict(os.environ, HOME=home, TORAGENTS_STATE=state)
+    e.pop("TORAGENTS_HOME", None)
+    r = subprocess.run([PY, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "inbox_agent.py"), "doctor"],
+                       capture_output=True, env=e)
+    return (r.stdout + r.stderr).decode("utf-8", "replace")
+
+def home_with(settings: str, cmd: str):
+    import tempfile
+    h = tempfile.mkdtemp(); st = os.path.join(h, "state")
+    os.makedirs(os.path.join(h, ".claude")); os.makedirs(os.path.join(st, "inbox"))
+    open(os.path.join(h, ".claude", "settings.json"), "w").write(
+        settings or '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"%s"}]}]}}' % cmd)
+    return h, st
+
+h19, s19 = home_with("", PY + " " + HOOK)
+t19 = doctor(h19, s19)
+check("doctor: proves the configured command works", "works: emitted UserPromptSubmit JSON" in t19, t19[-400:])
+h20, s20 = home_with("", PY + " /tmp/definitely-not-here/toragents_hook.py")
+check("doctor: missing script is named, not silent", "MISSING" in doctor(h20, s20), "no MISSING")
+h21, s21 = home_with('{"hooks":{oops', "")
+check("doctor: unparseable settings.json is called BROKEN", "does not parse" in doctor(h21, s21), "no parse error")
+h22, s22 = home_with('{"disableAllHooks":true,"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"%s"}]}]}}' % (PY + " " + HOOK), "")
+check("doctor: disableAllHooks is called out", "disableAllHooks is true" in doctor(h22, s22), "not reported")
+
 check("--peek never marks", run(d3, {}, "--peek")[1] != "" and ann(d3) is None)
 
 print(f"\n  {PASS} passed, {FAIL} failed")
