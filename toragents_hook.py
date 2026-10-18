@@ -110,6 +110,37 @@ SUPPORTED_EVENTS = ("SessionStart", "UserPromptSubmit", "SubagentStart",
                     "Stop", "SubagentStop")
 
 
+
+_REAL_STDOUT = sys.stdout
+
+
+class _NullStdout:
+    """Swallow everything, so a stray print cannot destroy a delivery.
+
+    Measured on Claude Code 2.1.302: ONE extra line on stdout before the JSON makes
+    the harness discard the entire hook output, silently, with exit code 0. No
+    error, no warning, nothing injected -- and the message is already marked
+    delivered, so it is gone. A single debugging print left in this file, or a
+    library writing a warning to stdout, would break delivery on someone else's
+    machine and look like "the hook never fires".
+
+    So in hook mode, stdout is a dead end for everything except the one payload
+    object, which is written straight to the real handle.
+    """
+
+    def write(self, *_a, **_k):
+        return 0
+
+    def flush(self, *_a, **_k):
+        return None
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        raise OSError("no fileno on the null stdout")
+
+
 def setup_stdout() -> None:
     """UTF-8 with a lossy fallback, always.
 
@@ -372,7 +403,7 @@ def emit(text: str, event: str | None, manual: bool) -> bool:
     to a pipe and only fails at interpreter exit, by which time we would have
     marked the message delivered. So flush here and report the truth."""
     if manual:
-        print(text)
+        _REAL_STDOUT.write(text + "\n")
     elif event in ("SessionStart", "UserPromptSubmit", "SubagentStart"):
         out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
         # The human, not only the agent. additionalContext is invisible in the
@@ -383,10 +414,21 @@ def emit(text: str, event: str | None, manual: bool) -> bool:
         summary = user_summary(text)
         if summary:
             out["systemMessage"] = summary
-        print(json.dumps(out))
+        # The event name must match what we were asked for, or Claude Code drops
+        # the output without a word (measured: mismatch = silent discard).
+        if event not in SUPPORTED_EVENTS:
+            trace(event, "suppressed-unsupported-event")
+            return False
+        name = out.get("hookSpecificOutput", {}).get("hookEventName")
+        if name != event:
+            trace(event, "suppressed-event-mismatch", f"emitted={name!r}")
+            return False
+        _REAL_STDOUT.write(json.dumps(out) + "\n")
+        _REAL_STDOUT.flush()
     elif event in ("Stop", "SubagentStop"):
         # The Stop path already shows its reason in the UI as a hook message.
-        print(json.dumps({"decision": "block", "reason": text}))
+        _REAL_STDOUT.write(json.dumps({"decision": "block", "reason": text}) + "\n")
+        _REAL_STDOUT.flush()
     else:
         return False
     try:
@@ -684,6 +726,8 @@ def main() -> int:
         return 0
     peek = "--peek" in sys.argv
     manual = "--print" in sys.argv or peek
+    if not manual:
+        sys.stdout = _NullStdout()   # only the payload may escape
 
     # Decide whether we have anything to say AT ALL before touching the memo.
     # Marking and then rolling back works, but writing for an event we never

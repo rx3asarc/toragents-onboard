@@ -279,6 +279,32 @@ check("second harness: gets no duplicate of the same message", b"Incoming Tor" n
 check("second harness: did not erase the first claim",
       "cccc7777" in open(recpath).read() or "claude" in open(recpath).read(), open(recpath).read())
 
+# ---- the payload must be the ONLY thing on stdout -----------------------------
+# Measured on Claude Code 2.1.302: one extra stdout line discards the whole hook
+# output silently, exit 0, nothing injected, message already marked delivered.
+for ev in ("SessionStart", "UserPromptSubmit", "Stop"):
+    d15 = mkstate(1)   # fresh state: the first delivery marks the only message
+    rc, out, err = run(d15, {"hook_event_name": ev, "session_id": "abab1212"},
+                       env_extra={"CLAUDE_CODE_ENTRYPOINT": "cli"})
+    stripped = out.strip()
+    one_object = stripped.startswith("{") and stripped.endswith("}") and stripped.count("\n") == 0
+    check(f"stdout: {ev} emits one JSON object and nothing else", one_object, out[:120])
+    if stripped:
+        check(f"stdout: {ev} names its own event",
+              json.loads(stripped)["hookSpecificOutput"]["hookEventName"] == ev, stripped[:120])
+
+# a manual drain is the opposite case: a human runs it and wants prose
+d16 = mkstate(1)
+rc, out, err = run(d16, {}, "--print")
+check("stdout: manual drain prints prose, not JSON", not out.strip().startswith("{"), out[:80])
+
+# and the hook must not write a payload for an event it does not support
+d17 = mkstate(1)
+rc, out, err = run(d17, {"hook_event_name": "SomeFutureEvent", "session_id": "cdcd3434"})
+check("stdout: unsupported event emits nothing", out.strip() == "", out[:80])
+check("trace: unsupported event is recorded, not silent",
+      "unsupported-event" in open(os.path.join(d17, "state", "hook.log")).read(), "missing")
+
 check("--peek never marks", run(d3, {}, "--peek")[1] != "" and ann(d3) is None)
 
 print(f"\n  {PASS} passed, {FAIL} failed")
