@@ -290,8 +290,15 @@ for ev in ("SessionStart", "UserPromptSubmit", "Stop"):
     one_object = stripped.startswith("{") and stripped.endswith("}") and stripped.count("\n") == 0
     check(f"stdout: {ev} emits one JSON object and nothing else", one_object, out[:120])
     if stripped:
-        check(f"stdout: {ev} names its own event",
-              json.loads(stripped)["hookSpecificOutput"]["hookEventName"] == ev, stripped[:120])
+        obj = json.loads(stripped)
+        # Stop answers with a decision, not with context; both shapes are legal,
+        # and asserting one shape for every event is how a test lies about a pass.
+        if ev == "Stop":
+            check(f"stdout: {ev} answers with a decision or context",
+                  "decision" in obj or "hookSpecificOutput" in obj, stripped[:120])
+        else:
+            check(f"stdout: {ev} names its own event",
+                  obj["hookSpecificOutput"]["hookEventName"] == ev, stripped[:120])
 
 # a manual drain is the opposite case: a human runs it and wants prose
 d16 = mkstate(1)

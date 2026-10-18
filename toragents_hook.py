@@ -402,8 +402,23 @@ def emit(text: str, event: str | None, manual: bool) -> bool:
     gave up (a Claude UserPromptSubmit timeout does exactly this); print() buffers
     to a pipe and only fails at interpreter exit, by which time we would have
     marked the message delivered. So flush here and report the truth."""
+    def w(payload: str) -> bool:
+        """Write and prove it left. report the truth.
+
+        Flushing matters: print() buffers into a pipe and only fails at interpreter
+        exit, by which time the message has been marked delivered and is lost. And
+        it must be the REAL handle, not sys.stdout -- in hook mode sys.stdout is the
+        null writer, so flushing it would report success for a pipe that is gone.
+        """
+        try:
+            _REAL_STDOUT.write(payload + "\n")
+            _REAL_STDOUT.flush()
+            return True
+        except (BrokenPipeError, OSError, ValueError):
+            return False
+
     if manual:
-        _REAL_STDOUT.write(text + "\n")
+        return w(text)
     elif event in ("SessionStart", "UserPromptSubmit", "SubagentStart"):
         out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
         # The human, not only the agent. additionalContext is invisible in the
@@ -423,19 +438,11 @@ def emit(text: str, event: str | None, manual: bool) -> bool:
         if name != event:
             trace(event, "suppressed-event-mismatch", f"emitted={name!r}")
             return False
-        _REAL_STDOUT.write(json.dumps(out) + "\n")
-        _REAL_STDOUT.flush()
+        return w(json.dumps(out))
     elif event in ("Stop", "SubagentStop"):
         # The Stop path already shows its reason in the UI as a hook message.
-        _REAL_STDOUT.write(json.dumps({"decision": "block", "reason": text}) + "\n")
-        _REAL_STDOUT.flush()
-    else:
-        return False
-    try:
-        sys.stdout.flush()
-        return True
-    except (BrokenPipeError, OSError):
-        return False
+        return w(json.dumps({"decision": "block", "reason": text}))
+    return False
 
 
 def statusline() -> str:
