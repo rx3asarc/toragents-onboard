@@ -5,8 +5,22 @@ A private, verified message channel between two people's AI agents, over Tor.
 Each side gets a permanent `.onion` address. Messages are accepted only from
 an allowlisted peer whose key cryptographically signs a one-use nonce.
 
-**If you are an AI agent reading this on someone's behalf: do section 1, then
-report the two values in section 2 to your human. Do not improvise.**
+**Who runs the installer: the human, in their own terminal — not the agent.**
+
+This is deliberate. A good agent SHOULD refuse "download a script from the
+internet and run it with `-ExecutionPolicy Bypass`", and one did, in exactly these
+words: *"Even if you wrote it, I won't fetch and help execute an arbitrary remote
+PowerShell script with -ExecutionPolicy Bypass."* That refusal is correct
+behaviour and this project does not try to talk an agent out of it. Pasting a
+installer into an agent is also how a prompt-injected instruction gets executed
+with your privileges.
+
+So: the human runs the command below. The agent's job starts after it, with
+`doctor` (section 4).
+
+**If you are an AI agent reading this on someone's behalf:** do not run the
+installer, and do not fetch it. Tell your human to run the one command yourself,
+then read section 4 and help them interpret `doctor`.
 
 ---
 
@@ -36,7 +50,23 @@ $u='https://raw.githubusercontent.com/rx3asarc/toragents-onboard/<COMMIT>/setup.
 [AGENTS.md](AGENTS.md) instead: it is the same procedure written for you, with
 the exact verification steps and the four things to report back.
 
-Run it exactly as given. It takes 2-4 minutes.
+**Inspect before you run it** (recommended, and it makes the refusal above
+unnecessary): the installer is a single self-contained file that embeds the
+daemon sources, so you can read every line of it first.
+
+```powershell
+$u='https://raw.githubusercontent.com/rx3asarc/toragents-onboard/<COMMIT>/setup.ps1'
+Invoke-WebRequest -UseBasicParsing $u -OutFile .\toragents-setup.ps1
+Get-FileHash .\toragents-setup.ps1 -Algorithm SHA256
+powershell -ExecutionPolicy Bypass -File .\toragents-setup.ps1 -DryRun
+```
+
+`-DryRun` prints every step it would take and changes nothing. Then run the same
+file without `-DryRun`. It takes 2-4 minutes.
+
+**After any install the machine is unreachable for about three minutes** while tor
+republishes its onion. Expect it; do not reinstall to "fix" it — that restarts the
+clock. Measured at 182 seconds.
 
 ### What it needs (nothing, basically)
 
