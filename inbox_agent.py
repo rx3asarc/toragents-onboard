@@ -572,6 +572,88 @@ def send_to(target_onion, body, k=None, session=None, to_session=None):
 
 
 # ------------------------------------------------------------------- cli --
+def cmd_doctor(a):
+    """Answer "is the receiving half actually wired up on THIS machine?".
+
+    Everything here is measured from disk and from the harness config. Nothing is
+    inferred. The question it exists to settle is the one that cannot be settled by
+    reasoning: a hook that never fires and a hook that fires and finds nothing look
+    identical from the outside, so we look at the hook's own trace instead.
+    """
+    home = os.path.expanduser("~")
+    state = STATE
+    inbox = os.path.join(state, "inbox")
+    print(f"  state        {state}")
+    def count(d):
+        try:
+            return len([n for n in os.listdir(d) if n.endswith(".json")])
+        except OSError:
+            return -1
+    print(f"  inbox        {count(inbox)} file(s) waiting")
+    try:
+        import json as _j
+        announced = len(_j.load(open(os.path.join(state, "announced.json"))))
+    except Exception:
+        announced = 0
+    print(f"  announced    {announced} already delivered")
+    for name in ("onion.txt", "config.json"):
+        p = os.path.join(state, name)
+        print(f"  {name:12} {'present' if os.path.exists(p) else 'MISSING'}")
+
+    print("\n  harness config")
+    claude = os.path.join(home, ".claude", "settings.json")
+    events = []
+    try:
+        import json as _j
+        cfg = _j.load(open(claude))
+        for ev, arr in (cfg.get("hooks") or {}).items():
+            for g in arr:
+                for h in g.get("hooks", []):
+                    if "toragents_hook" in (h.get("command") or ""):
+                        events.append(ev)
+        sl = (cfg.get("statusLine") or {}).get("command") or ""
+        print(f"  claude hooks {sorted(set(events)) if events else 'NONE registered'}")
+        print(f"  statusLine   {'toragents' if 'toragents_hook' in sl else 'not ours'}")
+    except FileNotFoundError:
+        print(f"  claude       {claude} does not exist")
+    except Exception as e:
+        print(f"  claude       unreadable: {e}")
+
+    print("\n  hook trace (what actually ran)")
+    log = os.path.join(state, "hook.log")
+    try:
+        lines = open(log, encoding="utf-8", errors="replace").read().splitlines()
+    except FileNotFoundError:
+        lines = []
+    if not lines:
+        print("  EMPTY -- the hook has never run on this machine.")
+        print("  If the config above lists events, the hook is not being invoked.")
+        return 0
+    seen = {}
+    for line in reversed(lines):
+        ev = "-"
+        for tok in line.split():
+            if tok.startswith("event="):
+                ev = tok.split("=", 1)[1]
+                break
+        seen.setdefault(ev, line.split()[0] if line.split() else "?")
+    for line in lines[-12:]:
+        print(f"  {line}")
+    print("\n  verdict")
+    for ev in ("SessionStart", "UserPromptSubmit", "Stop"):
+        if ev in events and ev not in seen:
+            print(f"  {ev:18} NEVER SEEN -- registered, but never ran")
+        elif ev in seen:
+            print(f"  {ev:18} ran at {seen[ev]}")
+        elif ev not in events:
+            print(f"  {ev:18} not registered")
+    if "UserPromptSubmit" in events and "UserPromptSubmit" not in seen:
+        print("\n  A prompt does not run the hook. That is the whole fault: mail will")
+        print("  arrive and never be injected. Restart the harness once so it re-reads")
+        print("  its config, then run one prompt and run this command again.")
+    return 0
+
+
 def cmd_serve(a):
     print(f"[inbox] running inbox_agent.py sha256={_self_fingerprint()} "
           f"state={STATE}", flush=True)
@@ -737,6 +819,7 @@ def main():
     s = ap.add_subparsers(dest="cmd", required=True)
     s.add_parser("serve").set_defaults(fn=cmd_serve)
     s.add_parser("whoami").set_defaults(fn=cmd_whoami)
+    s.add_parser("doctor").set_defaults(fn=cmd_doctor)
     s.add_parser("init").set_defaults(fn=cmd_init)
     s.add_parser("peers").set_defaults(fn=cmd_peers)
     p = s.add_parser("add-peer")

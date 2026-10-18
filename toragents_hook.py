@@ -441,6 +441,30 @@ def note_delivery(senders: list) -> None:
         pass
 
 
+def trace(event, decision: str, extra: str = "") -> None:
+    """One line per invocation, bounded, no bodies, never fatal.
+
+    Why this exists: a hook that never fires and a hook that fires and finds
+    nothing produce EXACTLY the same evidence -- an empty inbox and no new
+    context. That ambiguity cost a full evening on a real machine: the config was
+    correct, the state was correct, writes worked, and there was still no way to
+    tell whether Claude Code was running the hook on a prompt or not. The only
+    instrument that answers it is a log the hook writes itself.
+    """
+    try:
+        path = os.path.join(STATE, "hook.log")
+        if os.path.exists(path) and os.path.getsize(path) > 200_000:
+            os.replace(path, path + ".1")
+        when = time.strftime("%H:%M:%S")
+        line = f"{when} pid={os.getpid()} event={event or '-'} session={MY_SESSION or '-'} {decision}"
+        if extra:
+            line += f" {extra}"
+        with open(path, "a", encoding="utf-8", errors="replace") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
 def badge() -> str:
     """One short line for a persistent UI element (Claude Code's statusLine).
 
@@ -570,10 +594,12 @@ def main() -> int:
     # event means say nothing and change nothing.
     if "--statusline" in sys.argv:
         print(statusline())
+        trace(event, "statusline")
         return 0
     if "--badge" in sys.argv:
         # Status line: print one line and leave. No payload, no marking.
         print(badge())
+        trace(event, "badge")
         return 0
     peek = "--peek" in sys.argv
     manual = "--print" in sys.argv or peek
@@ -583,6 +609,7 @@ def main() -> int:
     # answer is pointless, and an empty announced.json on disk looks like state
     # somebody deliberately created.
     if not manual and event not in SUPPORTED_EVENTS:
+        trace(event, "unsupported-event")
         return 0
 
     msgs = scan()
@@ -593,17 +620,21 @@ def main() -> int:
     if not msgs:
         if manual:
             print(f"no new messages ({INBOX})")
+        trace(event, "nothing-pending")
         return 0
 
     # A Stop hook already continued this turn: say nothing, or the agent can
     # bounce forever between "stop" and "here is another message".
     if event == "Stop" and stop_hook_active:
+        trace(event, "stop-already-active")
         return 0
 
     batch = fit(msgs)
     text = render(batch, len(msgs))
     known = read_announced()
     wanted = known | {m["id"] for m in batch}
+
+    trace(event, "delivered", f"ids={[m['id'] for m in batch]} n_pending={len(msgs)}")
 
     if peek:
         # Look, do not take. Nothing is marked and nothing is at risk.

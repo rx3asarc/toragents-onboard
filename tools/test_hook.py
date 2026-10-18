@@ -20,6 +20,10 @@ def ann(d):
 def run(d, payload, *args, env_extra=None):
     e = dict(os.environ, TORAGENTS_HOME=d)
     e.pop("TORAGENTS_STATE", None)
+    # The runner may itself be a pi session; identity must come from the payload,
+    # not from whichever harness happens to be executing the tests.
+    e.pop("PI_SESSION_ID", None); e.pop("PI_SESSION_FILE", None)
+    e.pop("CLAUDE_CODE_ENTRYPOINT", None); e.pop("CODEX_HOME", None)
     if env_extra: e.update(env_extra)
     p = subprocess.run([PY, HOOK, *args], input=json.dumps(payload).encode(),
                        capture_output=True, env=e)
@@ -240,6 +244,22 @@ with open(os.path.join(d11, "state", "last_delivery.json"), "w") as f:
     json.dump({"label": "maestro-pc", "ts": _t.time() - 3600}, f)
 rc, out = run_arg(d11, "--badge")
 check("badge: stale arrival note is dropped", "last" not in out, out)
+
+# ---- the hook must leave evidence that it RAN ---------------------------------
+# Without this, "hook never fires" and "hook fires, nothing pending" are the same
+# observation, which is exactly the confusion that cost an evening on a real box.
+d12 = mkstate(1)
+e12 = dict(os.environ, TORAGENTS_HOME=d12); e12.pop("TORAGENTS_STATE", None)
+run(d12, {"hook_event_name": "SessionStart", "session_id": "eeee5555"},
+    env_extra={"CLAUDE_CODE_ENTRYPOINT": "cli"})
+run(d12, {"hook_event_name": "UserPromptSubmit", "session_id": "eeee5555"},
+    env_extra={"CLAUDE_CODE_ENTRYPOINT": "cli"})
+log = open(os.path.join(d12, "state", "hook.log")).read()
+check("trace: records the event that ran", "event=SessionStart" in log, log)
+check("trace: records a prompt that found nothing", "nothing-pending" in log, log)
+check("trace: names the session", "session=claude-eeee5555" in log, log)
+check("trace: one line per invocation", len(log.strip().splitlines()) == 2, log)
+check("trace: never records the body", "hello from test" not in log, log)
 
 check("--peek never marks", run(d3, {}, "--peek")[1] != "" and ann(d3) is None)
 
