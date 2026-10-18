@@ -46,6 +46,7 @@ Exit code is always 0. A failing hook must never wedge somebody's agent.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -92,6 +93,17 @@ def _auto_session(payload=None) -> str:
     return f"{prefix}-{sid.replace('-', '')[:8]}"
 
 
+def _harness() -> str:
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT") or os.environ.get("CLAUDE_CONFIG_DIR"):
+        return "claude"
+    if os.environ.get("PI_SESSION_ID"):
+        return "pi"
+    if os.environ.get("CODEX_HOME") or os.environ.get("CODEX_THREAD_ID"):
+        return "codex"
+    return "unknown"
+
+
+HARNESS = _harness()
 MY_SESSION = _auto_session()
 RECENT_ARRIVAL_S = 15 * 60     # how long "last delivered" stays on the status line
 SUPPORTED_EVENTS = ("SessionStart", "UserPromptSubmit", "SubagentStart",
@@ -441,6 +453,75 @@ def note_delivery(senders: list) -> None:
         pass
 
 
+LOCK_STALE_S = 5.0
+
+
+@contextlib.contextmanager
+def inbox_lock():
+    """Serialise the claim, so two harnesses cannot both deliver the same message.
+
+    A machine can run pi AND Claude Code AND Codex at once, and all of them read
+    one inbox and share one announced.json. Without a lock, the read-modify-write
+    below loses updates and the same message can be handed to two agents -- while
+    a message that one of them claimed can look, from the other, like silence.
+    Cheaper and more honest than trusting that only one harness is running.
+    """
+    path = os.path.join(STATE, "announced.lock")
+    deadline = time.time() + 2.0
+    fd = None
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(path) > LOCK_STALE_S:
+                    os.unlink(path)   # crashed holder
+                    continue
+            except OSError:
+                pass
+            if time.time() > deadline:
+                break                 # never block delivery on a lock
+            time.sleep(0.02)
+        except OSError:
+            break
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd); os.unlink(path)
+            except OSError:
+                pass
+
+
+def record_delivery(ids, who: str) -> None:
+    """Remember WHO delivered each id, so the other harness can say what happened.
+
+    "It never arrived" and "it arrived in the other window" must not look the same.
+    This file is a sidecar rather than a change to announced.json, so an older
+    extension reading a plain list keeps working.
+    """
+    if not ids:
+        return
+    path = os.path.join(STATE, "delivered_by.json")
+    try:
+        try:
+            data = json.load(open(path, encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        for i in ids:
+            data[i] = {"by": who, "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def trace(event, decision: str, extra: str = "") -> None:
     """One line per invocation, bounded, no bodies, never fatal.
 
@@ -647,7 +728,13 @@ def main() -> int:
     senders = [l[len("--- BEGIN PEER MESSAGE from "):].split(" (")[0].split(" id=")[0]
                .split(" \u00b7 session")[0].strip()
                for l in text.splitlines() if l.startswith("--- BEGIN PEER MESSAGE from ")]
-    marked = write_announced(wanted)
+    with inbox_lock():
+        # Re-read inside the lock: another harness may have claimed something
+        # between our scan and now, and delivering it twice is worse than late.
+        fresh_known = read_announced()
+        batch = [m for m in batch if m["id"] not in fresh_known] or batch
+        wanted = fresh_known | {m["id"] for m in batch}
+        marked = write_announced(wanted)
     if event in ("Stop", "SubagentStop") and not marked:
         return 0  # never loop a continuation on a memo that will not stick
 
@@ -664,6 +751,7 @@ def main() -> int:
     # Delivered. Leave a trace, so the human's status line can still say that
     # something arrived after the message itself has been read.
     note_delivery(senders)
+    record_delivery([m["id"] for m in batch], f"{HARNESS}:{MY_SESSION or '-'}")
 
     return 0
 

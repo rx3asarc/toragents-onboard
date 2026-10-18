@@ -619,6 +619,20 @@ def cmd_doctor(a):
     except Exception as e:
         print(f"  claude       unreadable: {e}")
 
+    # Who took the mail? On a machine running pi AND Claude Code, untargeted mail
+    # is first-come; without this the second harness genuinely cannot tell "nothing
+    # arrived" from "the other window took it", and neither can the person.
+    try:
+        import json as _j
+        rec = _j.load(open(os.path.join(state, "delivered_by.json"), encoding="utf-8"))
+        recent = sorted(rec.items(), key=lambda kv: kv[1].get("at", ""), reverse=True)[:5]
+        if recent:
+            print("\n  recently delivered by")
+            for mid, meta in recent:
+                print(f"  {mid:14} {meta.get('at','?')}  by {meta.get('by','?')}")
+    except (OSError, ValueError):
+        pass
+
     print("\n  hook trace (what actually ran)")
     log = os.path.join(state, "hook.log")
     try:

@@ -261,6 +261,24 @@ check("trace: names the session", "session=claude-eeee5555" in log, log)
 check("trace: one line per invocation", len(log.strip().splitlines()) == 2, log)
 check("trace: never records the body", "hello from test" not in log, log)
 
+# ---- one inbox, two harnesses: the loser must be able to find out -------------
+d13 = mkstate(1)
+e13 = dict(os.environ, TORAGENTS_HOME=d13); e13.pop("TORAGENTS_STATE", None)
+e13.pop("PI_SESSION_ID", None); e13["CLAUDE_CODE_ENTRYPOINT"] = "cli"
+subprocess.run([PY, HOOK], input=b'{"hook_event_name":"UserPromptSubmit","session_id":"cccc7777"}',
+               capture_output=True, env=e13)
+recpath = os.path.join(d13, "state", "delivered_by.json")
+check("record: a delivery names the harness that took it",
+      os.path.exists(recpath) and "claude" in open(recpath).read(), "missing")
+# and the second harness is told nothing, but nothing is lost or double-marked
+e14 = dict(e13); e14.pop("CLAUDE_CODE_ENTRYPOINT"); e14["PI_SESSION_ID"] = "dddd8888"
+p14 = subprocess.run([PY, HOOK], input=b'{"hook_event_name":"UserPromptSubmit","session_id":"dddd8888"}',
+                     capture_output=True, env=e14)
+check("second harness: gets no duplicate of the same message", b"Incoming Tor" not in p14.stdout,
+      p14.stdout[:80].decode("utf-8", "replace"))
+check("second harness: did not erase the first claim",
+      "cccc7777" in open(recpath).read() or "claude" in open(recpath).read(), open(recpath).read())
+
 check("--peek never marks", run(d3, {}, "--peek")[1] != "" and ann(d3) is None)
 
 print(f"\n  {PASS} passed, {FAIL} failed")
