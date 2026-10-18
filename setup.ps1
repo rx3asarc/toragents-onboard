@@ -70,6 +70,34 @@ $TorArch  = "x86_64"
 New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null
 Ok "home: $HomeDir"
 
+# ---------------------------------------------------------------- hashes ---
+# Filled in by tools/pin_hashes.py from checksums published by the people who
+# BUILT the artifacts. An empty entry means we do not know the right answer, and
+# the install stops rather than trusting whatever the network handed us.
+$Sha256Pins = @{
+  ["cpython-3.11.17+20261013-aarch64-apple-darwin-install_only.tar.gz"] = "d81d757a9785850393cd695a9a686c765a6370fbdc83738589ef2ecd3e5c44b3"
+  ["cpython-3.11.17+20261013-aarch64-pc-windows-msvc-install_only.tar.gz"] = "a1e65ec8fbfbb5dba01e3844ddc3e9ebcad446d6e6822cae9b1cc9717957dcef"
+  ["cpython-3.11.17+20261013-x86_64-apple-darwin-install_only.tar.gz"] = "3acde87324867dab4e63329be3010130c75bfc4a3709db00866862d750a3bba3"
+  ["cpython-3.11.17+20261013-x86_64-pc-windows-msvc-install_only.tar.gz"] = "7616ab1f74aab975bd91eb0a657a74a092a63a46cac38c5f3f9415c79fd781f5"
+  ["cpython-3.11.17+20261013-x86_64-unknown-linux-gnu-install_only.tar.gz"] = "846bf682e2b67393f2affa5e5c0994e446abc3a7cc5bb699890c36346823644c"
+  ["tor-expert-bundle-linux-x86_64-15.0.25.tar.gz"] = "19cf18726eecb362e0f21d27afa9ea9efe5da928bfdfbb1ceb5fe54519e87f4a"
+  ["tor-expert-bundle-macos-aarch64-15.0.25.tar.gz"] = "a3febb6179152b0b4f56a0f5cc57bf5cc8ecef7db35e7c3e9d5a044c8158c26c"
+  ["tor-expert-bundle-macos-x86_64-15.0.25.tar.gz"] = "e1ae4d4a734d28bb590839188511deb3cebc26fcbce9df66d01b2c452060fe95"
+  ["tor-expert-bundle-windows-x86_64-15.0.25.tar.gz"] = "c1988c701de2f24f7d098d1d6d7f507b58f27740d097f29c246e0524d639b252"
+}
+function Get-Sha256($path) { (Get-FileHash -Algorithm SHA256 -Path $path).Hash.ToLower() }
+function Assert-Hash($path, $name) {
+  $got = Get-Sha256 $path
+  $want = $Sha256Pins[$name]
+  if (-not $want) {
+    Die "no pinned SHA256 for $name (computed $got) -- refusing to install bytes nobody has vouched for"
+  }
+  if ($got -ne $want) {
+    Die "SHA256 mismatch for $name`: expected $want, got $got -- refusing to install"
+  }
+  Ok "verified $name (sha256 $($got.Substring(0,16))...)"
+}
+
 # ---------------------------------------------------------------- python ---
 function Install-PortablePython {
   $name = "cpython-$PBS_VER+$PBS_TAG-$PyTriple-install_only.tar.gz"
@@ -77,6 +105,8 @@ function Install-PortablePython {
   $tmp  = Join-Path $env:TEMP $name
   Write-Host "  downloading portable python ($PBS_VER) ..."
   Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+  if ($DryRun) { Warn "dry-run: would verify sha256 of $name" }
+  else { Assert-Hash $tmp $name }
   $dest = Join-Path $HomeDir "python"
   New-Item -ItemType Directory -Force -Path $dest | Out-Null
   & $Tar -xzf $tmp -C $dest --strip-components=1
@@ -113,6 +143,8 @@ if (-not (Test-Path $TorBin)) {
     $url  = "https://dist.torproject.org/torbrowser/$TOR_BUNDLE/$name"
     $tmp  = Join-Path $env:TEMP $name
     Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+    if ($DryRun) { Warn "dry-run: would verify sha256 of $name" }
+    else { Assert-Hash $tmp $name }
     New-Item -ItemType Directory -Force -Path (Join-Path $HomeDir "tor-bin") | Out-Null
     & $Tar -xzf $tmp -C (Join-Path $HomeDir "tor-bin")
     Remove-Item $tmp -Force -ErrorAction SilentlyContinue

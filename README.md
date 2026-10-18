@@ -196,7 +196,50 @@ fenced message, the person gets one line naming the sender —
 — and never the body. It is on a screen someone else may be looking at, and the
 agent already has the text.
 
-### The three minutes after any restart
+### What gets downloaded, and what is actually verified
+
+The installer fetches two things and refuses to install either unless the bytes
+match a hash pinned in this repo:
+
+| artifact | built by | where the pinned hash came from |
+| --- | --- | --- |
+| portable CPython 3.11.17 (`20261013`) | [python-build-standalone] | `SHA256SUMS` in that same GitHub release |
+| tor expert bundle `15.0.25` | [Tor Project] | `sha256sums-signed-build.txt`, whose GPG signature verifies |
+
+[python-build-standalone]: https://github.com/astral-sh/python-build-standalone/releases/download/20261013/SHA256SUMS
+[Tor Project]: https://dist.torproject.org/torbrowser/15.0.25/
+
+Nine digests are pinned (five CPython targets, four tor bundles). Mismatch or a
+missing pin stops the install — a wrong hash is corruption or an attack, and in
+both cases the only correct action is to stop.
+
+You can check a download yourself without installing anything:
+
+```bash
+bash setup.sh --verify tor-expert-bundle-windows-x86_64-15.0.25.tar.gz ./that-file.tar.gz
+```
+
+**The honest limits, stated rather than implied:**
+
+- The two artifacts do **not** have equal provenance. Tor's hash comes from a
+  **signed** file; we verified that signature once, on 2026-10-18, with the Tor
+  Browser Developers signing key
+  `EF6E286DDA85EA2A4BA7DE684E2C6E8793298290` (fingerprint). CPython's hash comes
+  from GitHub HTTPS and release immutability only — that release publishes no
+  signature and no attestation. If you have `gpg`, you can check the tor half
+  yourself against the file whose pinned sha256 is
+  `539e778fa5ae4e9e061e5721a4d15108b085fd5f26e45629ba587264f021f564`.
+- **Pinning protects the second hop, not the first.** `setup.sh` and `setup.ps1`
+  themselves arrive from a commit-pinned URL over HTTPS, and nothing verifies
+  them except your willingness to read them. That is why the section above tells
+  you to download, hash, and `-DryRun` first.
+- Verifying GPG on a bare Windows box is not a thing we can honestly do: there is
+  no `gpg`, and bootstrapping one means another unverified download. Hand-rolled
+  OpenPGP in the installer would be a few hundred lines of attacker-facing
+  parsing shipped to strangers — one subtle bug and it accepts forgeries
+  silently. So it is not there on purpose.
+
+## The three minutes after any restart
 
 Every install and every reinstall restarts tor on that machine, and a restarted
 tor must republish its hidden-service descriptor. Measured on this project: **182

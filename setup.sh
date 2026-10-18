@@ -35,7 +35,8 @@ while [ $# -gt 0 ]; do
     --peer-fp)    PEER_FP="$2"; shift 2 ;;
     --peer-label) PEER_LABEL="$2"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
-    --no-service) NOSVC=1; shift ;;  # write units but never install/start them
+    --no-service) NOSVC=1; shift ;;
+    --verify)     VERIFY_NAME="$2"; VERIFY_PATH="$3"; shift 3 ;;  # write units but never install/start them
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -45,6 +46,54 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ok()  { printf '  \033[32mok\033[0m %s\n' "$*"; }
 warn(){ printf '  \033[33mnote\033[0m %s\n' "$*"; }
 die() { printf '\n\033[31mSTOP:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# ------------------------------------------------------------------ hashes ---
+# Filled in by tools/pin_hashes.py from checksums published by the people who
+# BUILT the artifacts -- never from a mirror, never from whatever we happened to
+# download. No pinned hash for a file means we do not know the right answer for
+# it, and the install stops rather than trusting the network.
+SHA256_PINS="
+cpython-3.11.17+20261013-aarch64-apple-darwin-install_only.tar.gz d81d757a9785850393cd695a9a686c765a6370fbdc83738589ef2ecd3e5c44b3
+cpython-3.11.17+20261013-aarch64-pc-windows-msvc-install_only.tar.gz a1e65ec8fbfbb5dba01e3844ddc3e9ebcad446d6e6822cae9b1cc9717957dcef
+cpython-3.11.17+20261013-x86_64-apple-darwin-install_only.tar.gz 3acde87324867dab4e63329be3010130c75bfc4a3709db00866862d750a3bba3
+cpython-3.11.17+20261013-x86_64-pc-windows-msvc-install_only.tar.gz 7616ab1f74aab975bd91eb0a657a74a092a63a46cac38c5f3f9415c79fd781f5
+cpython-3.11.17+20261013-x86_64-unknown-linux-gnu-install_only.tar.gz 846bf682e2b67393f2affa5e5c0994e446abc3a7cc5bb699890c36346823644c
+tor-expert-bundle-linux-x86_64-15.0.25.tar.gz 19cf18726eecb362e0f21d27afa9ea9efe5da928bfdfbb1ceb5fe54519e87f4a
+tor-expert-bundle-macos-aarch64-15.0.25.tar.gz a3febb6179152b0b4f56a0f5cc57bf5cc8ecef7db35e7c3e9d5a044c8158c26c
+tor-expert-bundle-macos-x86_64-15.0.25.tar.gz e1ae4d4a734d28bb590839188511deb3cebc26fcbce9df66d01b2c452060fe95
+tor-expert-bundle-windows-x86_64-15.0.25.tar.gz c1988c701de2f24f7d098d1d6d7f507b58f27740d097f29c246e0524d639b252
+"
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+  else openssl dgst -sha256 "$1" | awk '{print $NF}'; fi
+}
+pin_for() { printf '%s\n' "$SHA256_PINS" | awk -v n="$1" '$1==n {print $2}'; }
+verify_artifact() {
+  # name path -- fail closed. A wrong hash is corruption or an attack; in both
+  # cases the correct action is to stop, not to install it and hope.
+  local name="$1" path="$2" want got
+  want="$(pin_for "$name")"
+  got="$(sha256_of "$path")"
+  if [ -z "$want" ]; then
+    die "no pinned SHA256 for $name (computed $got) -- refusing to run bytes nobody has vouched for"
+  fi
+  if [ "$want" != "$got" ]; then
+    die "SHA256 mismatch for $name: expected $want, got $got -- refusing to install"
+  fi
+  ok "verified $name (sha256 ${got%${got#????????????????}}...)"
+}
+download_to() {
+  if [ "$DRY" = 1 ]; then warn "dry-run: would download $1"; return 0; fi
+  curl -fsSL "$1" -o "$2"
+}
+
+# setup.sh --verify <artifact-name> <path> checks one file against the pins and
+# exits. Useful on its own: verify a download without installing anything.
+if [ -n "${VERIFY_NAME:-}" ]; then
+  verify_artifact "$VERIFY_NAME" "$VERIFY_PATH"
+  exit 0
+fi
 
 # ------------------------------------------------------------- platform ---
 if [ -n "${TORAGENTS_FORCE_OS:-}" ]; then
@@ -111,7 +160,13 @@ install_portable_python() {
   esac
   local url="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_VER}+${PBS_TAG}-${trip}-install_only.tar.gz"
   mkdir -p "$HOME_DIR/python"
-  curl -fsSL "$url" | tar xz -C "$HOME_DIR/python" --strip-components=1 || return 1
+  local name="cpython-${PBS_VER}+${PBS_TAG}-${trip}-install_only.tar.gz" tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/toragents-python.XXXXXX")"
+  download_to "$url" "$tmp" || { rm -f "$tmp"; return 1; }
+  if [ "$DRY" = 1 ]; then rm -f "$tmp"; return 0; fi
+  verify_artifact "$name" "$tmp" || { rm -f "$tmp"; return 1; }
+  tar xzf "$tmp" -C "$HOME_DIR/python" --strip-components=1 || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
   local c="$HOME_DIR/python/bin/python3"
   [ -x "$c" ] || return 1
   echo "$c"
@@ -152,7 +207,13 @@ install_tor_expert_bundle() {
   [ "$plat-$arch" = "linux-aarch64" ] && return 1
   url="https://dist.torproject.org/torbrowser/${TOR_BUNDLE_VER}/tor-expert-bundle-${plat}-${arch}-${TOR_BUNDLE_VER}.tar.gz"
   mkdir -p "$HOME_DIR/tor-bin"
-  curl -fsSL "$url" | tar xz -C "$HOME_DIR/tor-bin" || return 1
+  local name="tor-expert-bundle-${plat}-${arch}-${TOR_BUNDLE_VER}.tar.gz" tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/toragents-tor.XXXXXX")"
+  download_to "$url" "$tmp" || { rm -f "$tmp"; return 1; }
+  if [ "$DRY" = 1 ]; then rm -f "$tmp"; return 0; fi
+  verify_artifact "$name" "$tmp" || { rm -f "$tmp"; return 1; }
+  tar xzf "$tmp" -C "$HOME_DIR/tor-bin" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
   local t
   t="$(find "$HOME_DIR/tor-bin" -type f -name tor 2>/dev/null | head -1)"
   [ -n "$t" ] || return 1
